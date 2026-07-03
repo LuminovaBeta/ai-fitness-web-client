@@ -1,20 +1,80 @@
-# Python 编译缓存
+# ==========================================
+# 1. Operating System & IDEs (系统与编辑器)
+# ==========================================
+.DS_Store
+Thumbs.db
+db.json
+*.local
+
+# IDEs
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ==========================================
+# 2. Frontend - Vue & pnpm (前端配置)
+# ==========================================
+# pnpm 依赖目录
+node_modules/
+/pnpm-lock.yaml
+
+# Vue 构建输出
+dist/
+dist-ssr/
+*.local
+
+# 前端日志与缓存
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.eslintcache
+.stylelintcache
+.vite/
+.nuxt/
+
+# ==========================================
+# 3. Backend - Django & Python (后端配置)
+# ==========================================
+# Python 字节码与缓存
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+.mypy_cache/
 
-# 虚拟环境 (极其重要，绝对不能提交)
+# Python 虚拟环境 (uv, venv, poetry 等)
 .venv/
 venv/
+ENV/
 env/
+ENV/
 
-# 数据库文件
+# Django 媒体与静态文件 (生产环境收集的静态文件不应进版本控制)
+static/
+staticfiles/
+media/
+
+# Django 本地数据库 (开发阶段使用的 SQLite)
 *.sqlite3
-db.sqlite3
 
-# Django 静态文件归档 (如果有)
-collected_static/
+# ==========================================
+# 4. Security & Environment (安全与环境变量)
+# ==========================================
+# 敏感的配置文件（包含密钥、数据库密码等）
+.env
+.env.local
+.env.*.local
+secrets.json
 
-# 编辑器配置
-.vscode/
-.idea/
+# ==========================================
+# 5. Logs & Temporary Files (日志与临时文件)
+# ==========================================
+logs/
+*.log
+*.pot
+*.pyg
