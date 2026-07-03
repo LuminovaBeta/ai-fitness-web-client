@@ -1,0 +1,156 @@
+@charset "UTF-8";
+.sidebar {
+  width: 50px;
+  height: 100vh;
+  background: #1a1a1a;
+  transition: width 0.3s ease;
+  overflow: hidden;
+  position: fixed;
+  z-index: 1000;
+  /* 整体侧边栏展开触发器 */
+}
+.sidebar .nav-links {
+  padding-top: 10px;
+}
+.sidebar .nav-item {
+  display: flex;
+  align-items: center;
+  padding: 0 15px;
+  height: 60px;
+  text-decoration: none;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: background-color 0.2s ease;
+}
+.sidebar .nav-item .el-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  /* 图标的默认颜色 */
+  color: #efefef;
+  transition: color 0.2s ease;
+}
+.sidebar .nav-item .nav-text {
+  opacity: 0;
+  margin-left: 15px;
+  color: #efefef;
+  transition: color 0.2s ease, opacity 0.3s ease;
+}
+.sidebar .nav-item {
+  /* === 核心：当鼠标悬浮在 nav-item 上时 === */
+}
+.sidebar .nav-item:hover {
+  background-color: #333333;
+  border-left: 3px solid #3b82f6;
+  padding-left: 12px;
+  /* 3. 精准指挥里面的图标变色 */
+}
+.sidebar .nav-item:hover .el-icon {
+  color: #ffffff;
+}
+.sidebar .nav-item:hover {
+  /* 4. 精准指挥里面的文字变色 */
+}
+.sidebar .nav-item:hover .nav-text {
+  color: #ffffff;
+}
+.sidebar {
+  /* === 【核心修复】将整体侧边栏展开触发器放到最下面，并增加权重 === */
+}
+.sidebar:hover {
+  width: 200px;
+}
+.sidebar:hover .nav-item .nav-text {
+  opacity: 1;
+}
+
+/* ==========================================================================
+   全局变量配置 (Garmin 高级数据面板风格)
+   ========================================================================== */
+/* ==========================================================================
+   主内容区域外壳
+   ========================================================================== */
+.main-wrapper {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background-color: #f1f1f1;
+  /* 【核心】永远固定留出左侧 50px 的空间给侧边栏，侧边栏展开时采用抽屉式悬浮覆盖 */
+  margin-left: 50px;
+  /* ----------------------------------------------------------------------
+     1. 顶部状态栏
+     ---------------------------------------------------------------------- */
+}
+.main-wrapper .top-nav {
+  height: 60px;
+  background-color: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+  display: flex;
+  justify-content: space-between; /* 核心：左边盒子推到最左，右边推到最右 */
+  align-items: center;
+  padding: 0 32px;
+  position: sticky;
+  top: 0;
+  z-index: 99;
+}
+.main-wrapper .top-nav .left-section {
+  font-size: 18px; /* 想改左侧标题字号，直接改这里 */
+  font-weight: bold; /* 字体加粗 */
+  color: #111827; /* 字体颜色 */
+}
+.main-wrapper .top-nav .right-section {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+.main-wrapper .top-nav .right-section .icon-btn {
+  position: relative;
+  color: #9ca3af;
+  cursor: pointer;
+  transition: color 0.2s ease;
+  display: flex;
+}
+.main-wrapper .top-nav .right-section .icon-btn:hover {
+  color: #3b82f6;
+}
+.main-wrapper .top-nav .right-section .icon-btn .el-icon {
+  font-size: 22px;
+}
+.main-wrapper .top-nav .right-section .icon-btn .badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  background-color: #ef4444;
+  color: white;
+  font-size: 8px;
+  font-weight: bold;
+  padding: 2px 5px;
+  border-radius: 10px;
+  border: 2px solid #ffffff;
+}
+.main-wrapper .top-nav .right-section .user-profile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+.main-wrapper .top-nav .right-section .user-profile:hover {
+  background-color: #f3f4f6;
+}
+.main-wrapper .top-nav .right-section .user-profile .username {
+  font-size: 14px;
+  font-weight: 500;
+  color: #374151;
+}
+.main-wrapper .top-nav .right-section .user-profile .avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid #e5e7eb;
+}
+
+/*# sourceMappingURL=base.css.map */

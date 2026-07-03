@@ -1,0 +1,527 @@
+@charset "UTF-8";
+/* 【极其重要】防止中文注释导致编译器静默崩溃 */
+/* ==========================================================================
+   实时监测页面 (Live Monitoring) - 专属样式表
+   ========================================================================== */
+/* ==========================================================================
+   2. 全局复用卡片样式 (Base Card)
+   ========================================================================== */
+.base-card {
+  background-color: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  display: flex;
+  flex-direction: column;
+  transition: box-shadow 0.3s ease;
+}
+.base-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+.base-card .card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #f3f4f6;
+}
+.base-card .card-header .card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #111827;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+/* ==========================================================================
+   3. 核心网格布局 (Live Dashboard)
+   ========================================================================== */
+.live-dashboard {
+  display: grid;
+  grid-template-columns: 2fr 1fr; /* 左侧画面与AI占2份，右侧控制台占1份 */
+  gap: 24px;
+  max-width: 90%;
+  margin: 0 auto;
+  padding-top: 10px;
+  /* ----------------------------------------------------------------------
+     左侧布局：视觉流与 AI 文字反馈
+     ---------------------------------------------------------------------- */
+}
+.live-dashboard .left-col {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  /* A. D455 视频流专属卡片 */
+}
+.live-dashboard .left-col .video-card {
+  padding: 0;
+  overflow: hidden;
+}
+.live-dashboard .left-col .video-card .video-wrapper {
+  position: relative;
+  width: 100%;
+  background-color: #000000;
+  aspect-ratio: 16/9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* AI 状态与 ROS 节点悬浮层 */
+}
+.live-dashboard .left-col .video-card .video-wrapper .ai-overlay {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  right: 20px;
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+}
+.live-dashboard .left-col .video-card .video-wrapper .ai-overlay .ros-topic {
+  background: rgba(0, 0, 0, 0.6);
+  color: #10b981;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12px;
+  backdrop-filter: blur(4px);
+}
+.live-dashboard .left-col .video-card .video-wrapper .ai-overlay .ai-status {
+  background: rgba(59, 130, 246, 0.85);
+  color: #ffffff;
+  padding: 6px 16px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: bold;
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.4);
+}
+.live-dashboard .left-col .video-card .video-wrapper .skeleton-placeholder {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.live-dashboard .left-col .video-card {
+  /* 视频底部操作栏 */
+}
+.live-dashboard .left-col .video-card .video-footer {
+  padding: 12px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f9fafb;
+  border-top: 1px solid #e5e7eb;
+}
+.live-dashboard .left-col .video-card .video-footer .model-info {
+  font-size: 13px;
+  color: #9ca3af;
+  font-family: monospace;
+}
+.live-dashboard .left-col {
+  /* B. AI 评价与文本框区块 */
+}
+.live-dashboard .left-col .text-box {
+  font-size: 14px;
+  color: #374151;
+  line-height: 1.6;
+}
+.live-dashboard .left-col .text-box strong {
+  color: #111827;
+}
+.live-dashboard .left-col .detail-box {
+  display: flex;
+  gap: 16px;
+}
+.live-dashboard .left-col .detail-box .detail-left {
+  flex: 1;
+  border-right: 1px solid #e5e7eb;
+  padding-right: 16px;
+}
+.live-dashboard .left-col .detail-box .detail-left .warning-text {
+  color: #ef4444;
+  font-weight: 500;
+  display: inline-block;
+  margin-top: 4px;
+}
+.live-dashboard .left-col .detail-box .detail-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+.live-dashboard .left-col .detail-box .detail-right .score {
+  font-size: 38px;
+  color: #10b981;
+  font-weight: 300;
+  line-height: 1;
+  margin-top: 8px;
+}
+.live-dashboard .left-col {
+  /* C. 训练随笔输入框 */
+}
+.live-dashboard .left-col .note-input {
+  width: 100%;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 14px;
+  color: #111827;
+  resize: vertical;
+  min-height: 80px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.live-dashboard .left-col .note-input:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+.live-dashboard .left-col .note-input::placeholder {
+  color: #9ca3af;
+}
+.live-dashboard {
+  /* ----------------------------------------------------------------------
+     右侧布局：控制台、日志与数据展示
+     ---------------------------------------------------------------------- */
+}
+.live-dashboard .right-col {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  /* A. 动作下拉选择器 */
+}
+.live-dashboard .right-col .action-selector {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 14px;
+  color: #111827;
+  background-color: #f9fafb;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+.live-dashboard .right-col .action-selector:focus {
+  border-color: #3b82f6;
+}
+.live-dashboard .right-col .load-btn {
+  margin-top: 12px;
+  width: 100%;
+}
+.live-dashboard .right-col {
+  /* ========================================
+     新增：生理体征卡片专属样式
+     ======================================== */
+}
+.live-dashboard .right-col .physio-card .card-header {
+  margin-bottom: 12px;
+}
+.live-dashboard .right-col .physio-card .card-header .heart-beat-icon {
+  animation: heartbeat 1.2s infinite;
+}
+.live-dashboard .right-col .physio-card .card-header .ble-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.live-dashboard .right-col .physio-card .card-header .ble-controls .loss-rate {
+  font-size: 12px;
+  color: #9ca3af;
+  font-family: monospace;
+}
+.live-dashboard .right-col .physio-card .physio-display {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: #f9fafb;
+  border-radius: 6px;
+  padding: 16px 12px;
+  border: 1px solid #e5e7eb;
+}
+.live-dashboard .right-col .physio-card .physio-display .metric-box {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.live-dashboard .right-col .physio-card .physio-display .metric-box .metric-label {
+  font-size: 13px;
+  color: #374151;
+  font-weight: 500;
+}
+.live-dashboard .right-col .physio-card .physio-display .metric-box .metric-value {
+  font-variant-numeric: tabular-nums;
+}
+.live-dashboard .right-col .physio-card .physio-display .metric-box .metric-value span:first-child {
+  font-size: 36px;
+  font-weight: bold;
+  line-height: 1;
+}
+.live-dashboard .right-col .physio-card .physio-display .metric-box .metric-value .unit {
+  font-size: 14px;
+  font-weight: normal;
+  margin-left: 2px;
+}
+.live-dashboard .right-col .physio-card .physio-display .metric-box .hr-text {
+  color: #ef4444;
+}
+.live-dashboard .right-col .physio-card .physio-display .metric-box .spo2-text {
+  color: #3b82f6;
+}
+.live-dashboard .right-col .physio-card .physio-display .vertical-divider {
+  width: 1px;
+  height: 40px;
+  background-color: #d1d5db;
+}
+.live-dashboard .right-col {
+  /* 纯 CSS 心跳动画 */
+}
+@keyframes heartbeat {
+  0% {
+    transform: scale(1);
+  }
+  15% {
+    transform: scale(1.15);
+  }
+  30% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.15);
+  }
+  60% {
+    transform: scale(1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.live-dashboard .right-col {
+  /* B. 训练计时器 */
+}
+.live-dashboard .right-col .timer-display {
+  font-size: 46px;
+  font-weight: 300;
+  color: #111827;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  margin: 12px 0 20px 0;
+  letter-spacing: 1px;
+}
+.live-dashboard .right-col .timer-controls {
+  display: flex;
+  gap: 12px;
+}
+.live-dashboard .right-col .timer-controls .flex-btn {
+  flex: 1;
+  font-weight: bold;
+}
+.live-dashboard .right-col {
+  /* 强制日志卡片撑满剩余高度 */
+}
+.live-dashboard .right-col .flex-grow-card {
+  flex: 1;
+  min-height: 300px;
+}
+.live-dashboard .right-col {
+  /* C. 极客终端日志 (黑客帝国代码风) */
+}
+.live-dashboard .right-col .log-terminal {
+  background-color: #1e1e1e;
+  color: #d4d4d4;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 12px;
+  padding: 16px;
+  border-radius: 6px;
+  /* -- 核心滚动控制代码 -- */
+  height: 350px; /* 绝对固定高度！就像给它装了个铁盒子 */
+  overflow-y: auto; /* 溢出时滚动 */
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* 🔥 新增：绝对的最大高度限制 */
+  max-height: 350px; /* 当内容高度超过 350px 时，强制出现滚动条。你可以根据屏幕视觉效果微调这个值 */
+  /* 隐藏默认的丑陋滚动条，自定义一个细长的滚动条 (WebKit 专属) */
+}
+.live-dashboard .right-col .log-terminal::-webkit-scrollbar {
+  width: 6px;
+}
+.live-dashboard .right-col .log-terminal::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 3px;
+}
+.live-dashboard .right-col .log-terminal::-webkit-scrollbar-track {
+  background: transparent;
+}
+.live-dashboard .right-col .log-terminal .log-line {
+  line-height: 1.4;
+  word-break: break-all;
+}
+.live-dashboard .right-col .log-terminal .log-line .time {
+  color: #569cd6;
+  margin-right: 8px;
+}
+.live-dashboard .right-col .log-terminal .log-line .info {
+  color: #ce9178;
+}
+.live-dashboard .right-col .log-terminal .log-line .warn {
+  color: #dcdcaa;
+  font-weight: bold;
+}
+.live-dashboard .right-col .log-terminal .log-line .success {
+  color: #b5cea8;
+  font-weight: bold;
+}
+.live-dashboard .right-col .log-terminal .log-line .error {
+  color: #f44336;
+  font-weight: bold;
+}
+
+/* ==========================================================================
+   🌟 大屏模式与悬浮 UI 专属样式 (Theater Mode & Glassmorphism)
+   ========================================================================== */
+/* 针对视频容器的全屏逻辑 */
+.video-wrapper.is-fullscreen {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 9999 !important;
+  background-color: #000000;
+  border-radius: 0;
+  /* 全局 HUD 字体与发光阴影设置 */
+}
+.video-wrapper.is-fullscreen .hud-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 10000;
+  padding: 40px; /* 距离边缘留出安全距离 */
+  color: #ffffff;
+  /* 核心：用多重阴影代替实体背景板，保证白色字体在白色视频背景上也能看清 */
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8), 0 0 10px rgba(0, 0, 0, 0.5);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-style: italic; /* 全局倾斜 */
+  /* 左上角：时间日期 */
+}
+.video-wrapper.is-fullscreen .hud-overlay .hud-top-left {
+  position: absolute;
+  top: 40px;
+  left: 40px;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 1px;
+}
+.video-wrapper.is-fullscreen .hud-overlay {
+  /* 右上角：退出按钮 */
+}
+.video-wrapper.is-fullscreen .hud-overlay .hud-top-right {
+  position: absolute;
+  top: 40px;
+  right: 40px;
+}
+.video-wrapper.is-fullscreen .hud-overlay {
+  /* 左下角：当前相位与报错信息 */
+}
+.video-wrapper.is-fullscreen .hud-overlay .hud-bottom-left {
+  position: absolute;
+  bottom: 40px;
+  left: 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.video-wrapper.is-fullscreen .hud-overlay {
+  /* 底部居中：控制按钮 */
+}
+.video-wrapper.is-fullscreen .hud-overlay .hud-bottom-center {
+  position: absolute;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 15px;
+}
+.video-wrapper.is-fullscreen .hud-overlay {
+  /* 右下角：运动数据指标栈 */
+}
+.video-wrapper.is-fullscreen .hud-overlay .hud-bottom-right {
+  position: absolute;
+  bottom: 40px;
+  right: 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end; /* 右对齐 */
+  gap: 25px; /* 参考图中间距较大 */
+}
+.video-wrapper.is-fullscreen .hud-overlay {
+  /* 通用指标组件结构 */
+}
+.video-wrapper.is-fullscreen .hud-overlay .hud-metric {
+  display: flex;
+  flex-direction: column;
+}
+.video-wrapper.is-fullscreen .hud-overlay .hud-metric.align-right {
+  text-align: right;
+}
+.video-wrapper.is-fullscreen .hud-overlay .hud-metric.align-left {
+  text-align: left;
+}
+.video-wrapper.is-fullscreen .hud-overlay .hud-metric .label {
+  font-size: 14px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.85);
+  margin-bottom: -4px; /* 拉近标签与数值的距离 */
+}
+.video-wrapper.is-fullscreen .hud-overlay .hud-metric .value {
+  font-size: 46px; /* 极大的数值显示 */
+  font-weight: 900; /* 极粗字体 */
+  line-height: 1;
+}
+.video-wrapper.is-fullscreen .hud-overlay .hud-metric .unit {
+  font-size: 16px;
+  font-weight: 700;
+  margin-left: 4px;
+}
+.video-wrapper.is-fullscreen .hud-overlay .hud-metric {
+  /* 特殊颜色修饰 */
+}
+.video-wrapper.is-fullscreen .hud-overlay .hud-metric.highlight .value {
+  color: #10b981;
+}
+.video-wrapper.is-fullscreen .hud-overlay .hud-metric.danger .value {
+  color: #ef4444;
+}
+
+/* 透明线框按钮优化 */
+.transparent-btn {
+  background: rgba(0, 0, 0, 0.2) !important;
+  border: 2px solid rgba(255, 255, 255, 0.6) !important;
+  color: #ffffff !important;
+  backdrop-filter: blur(4px);
+  font-weight: bold;
+  font-style: italic;
+  border-radius: 8px;
+  padding: 10px 24px;
+  transition: all 0.2s;
+}
+.transparent-btn:hover {
+  background: rgba(255, 255, 255, 0.25) !important;
+  border-color: #ffffff !important;
+  transform: scale(1.05);
+}
+
+.pointer-auto {
+  pointer-events: auto;
+}
+
+/*# sourceMappingURL=live_monitoring.css.map */

@@ -1,0 +1,20 @@
+# Python 编译缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境 (极其重要，绝对不能提交)
+.venv/
+venv/
+env/
+
+# 数据库文件
+*.sqlite3
+db.sqlite3
+
+# Django 静态文件归档 (如果有)
+collected_static/
+
+# 编辑器配置
+.vscode/
+.idea/
