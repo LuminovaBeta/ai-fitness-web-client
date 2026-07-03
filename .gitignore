@@ -19,6 +19,7 @@ db.json
 # 2. Frontend - Vue & pnpm (前端配置)
 # ==========================================
 # pnpm 依赖目录
+node_modules/*
 node_modules/
 /pnpm-lock.yaml
 
