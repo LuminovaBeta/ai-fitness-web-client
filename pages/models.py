@@ -107,3 +107,14 @@ class AIFeedback(models.Model):
     
     def __str__(self):
         return f"反馈 - {self.activity.id}"
+    
+#人脸识别
+class UserFaceEmbedding(models.Model):
+    """ 用户人脸特征向量表 """
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='face_embedding')
+    # 存储 w600k_r50 生成的 512 维浮点数列表，形如: [0.023, -0.104, ..., 0.089]
+    embedding = models.JSONField(verbose_name="512维人脸特征向量")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.user.username} 的人脸特征库"
