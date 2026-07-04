@@ -9,4 +9,5 @@ dependencies = [
     "django-sass-processor>=1.4.2",
     "djangorestframework>=3.17.1",
     "djangorestframework-simplejwt>=5.5.1",
+    "edge-tts>=7.2.8",
 ]
