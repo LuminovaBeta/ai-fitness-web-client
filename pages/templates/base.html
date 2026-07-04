@@ -1,0 +1,179 @@
+<!-- base.html -->
+{% load static %} {% load sass_tags %}
+<!DOCTYPE html>
+<html lang="zh-CN">
+    
+<head>
+    <meta charset="UTF-8">
+    <title>AI 健身教练控制台</title>
+    
+    <link rel="stylesheet" href="/static/css/reset.css">
+    <link rel="stylesheet" href="/static/css/base.css">
+
+    <style>
+        /* 强制给所有的 el-icon 和内部的 svg 赋予绝对固定的大小 */
+        .el-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px;  /* 永远固定为 20 像素宽 */
+            height: 20px; /* 永远固定为 20 像素高 */
+        }
+        .el-icon svg {
+            width: 100%;
+            height: 100%;
+            /* fill: currentColor; */
+        }
+    </style>
+
+    {% block extra_head %}
+    {% endblock %}
+
+
+</head>
+<body>
+    <div id="app">
+        <!-- 左侧导航栏 -->
+        <aside class="sidebar">
+            <nav class="nav-links">
+                <a href="/" class="nav-item">
+                    <el-icon class="icon"><house></house></el-icon>
+                    <span class="nav-text">首页概览</span>
+                </a>
+                <a href="/live" class="nav-item">
+                    <el-icon class="icon"><video-camera></video-camera></el-icon>
+                    <span class="nav-text">实时监测</span>
+                </a>
+                <a href="/history" class="nav-item">
+                    <el-icon class="icon"><data-line></data-line></el-icon>
+                    <span class="nav-text">历史复盘</span>
+                </a>
+                <a href="/backend" class="nav-item">
+                    <el-icon class="icon"><setting></setting></el-icon>
+                    <span class="nav-text">系统后台</span>
+                </a>
+            </nav>
+        </aside>
+
+        <!-- 主要区域 -->
+        <div class="main-wrapper">
+            <header class="top-nav">
+                <div class="left-section">
+                    {% block page_title %}
+                    {% endblock %}
+                </div>
+
+                <div class="right-section">
+                    <div class="icon-btn">
+                        <el-icon><bell></bell></el-icon>
+                        <span class="badge">3</span>
+                    </div>
+
+                    <div class="user-profile">
+                        <span class="username">elf</span>
+                        <img src="{% static 'img/avatar.png' %}" alt="头像" class="avatar" onerror="this.onerror=null; this.src='/static/img/temp/2026嵌入式头像.png'">
+                    </div>
+                </div>
+            </header>
+
+            <main class="content">
+                {% block content %}
+                {% endblock %}
+            </main>
+        </div>
+    </div>
+
+
+
+    <script src="/static/libs/vue3/vue.global.js"></script>
+    <script src="/static/libs/element-plus/element-plus@2.13.0/dist/index.full.js"></script>
+    <script src="/static/libs/element-plus/icons-vue@2.3.2/dist/index.iife.min.js"></script>
+
+
+    <script>
+        const { ElMessage, ElMessageBox } = ElementPlus;
+        const { createApp, ref, markRaw, onMounted, onUnmounted } = Vue;
+
+        // 【核心魔法】定义一个全局数组，子页面可以通过往这里面 push 对象，
+        // 来无缝注入自己的 data, methods 和生命周期钩子！
+        window.PAGE_MIXINS = [];
+    </script>
+    
+    <!-- vue 逻辑 -->
+    {% block vue_logic %}{% endblock %}
+
+    <script>
+        const app = Vue.createApp({
+            delimiters: ['[[', ']]'], 
+            // 将子页面注入的逻辑数组挂载到这里
+            mixins: window.PAGE_MIXINS, 
+            data() {
+                return {
+                    // 这里只保留所有页面都通用的全局状态
+                    isSidebarCollapsed: false,
+                }
+            },
+            created() {
+                console.log("AI 健身教练控制台 - Vue 基础底座挂载成功！");
+            },
+            methods: {
+                // 全局通用方法，比如退出登录、侧边栏切换等
+                toggleSidebar() {
+                    this.isSidebarCollapsed = !this.isSidebarCollapsed;
+                }
+            }
+        });
+
+        // 注册 Element Plus 和图标
+        app.use(ElementPlus);
+        for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
+            app.component(key, component)
+        }
+    </script>
+
+    <!-- vue 组件 -->
+    {% block vue_components %}{% endblock %}
+
+    <script>
+        // 最终执行挂载
+        app.mount('#app');
+    </script>
+
+    {% block scripts %}{% endblock %}
+
+    <!-- <script>
+        // 解构赋值
+        const { ElMessage, ElMessageBox } = ElementPlus;
+        const { createApp, ref, markRaw } = Vue;
+
+        // 创建 Vue 实例
+        const app = Vue.createApp({
+            delimiters: ['[[', ']]'], // 极其重要：防止和 Django 的 { { } } 冲突
+            data() {
+                return {
+                    // 这里可以预留控制台的全局数据，比如侧边栏折叠状态
+                    isSidebarCollapsed: false,
+                }
+            },
+            created() {
+                // 控制台初始化逻辑可以在这里写
+                console.log("AI 健身教练控制台 - Vue 挂载成功！");
+            },
+            methods: {
+                // 全局通用方法放在这里
+            }
+        });
+
+        // 1. 注册 Element Plus 插件
+        app.use(ElementPlus);
+
+        // 2. 批量注册所有图标 (保持你源码里的做法)
+        for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
+            app.component(key, component)
+        }
+
+        // 3. 挂载到 DOM
+        app.mount('#app');
+    </script> -->
+</body>
+</html>

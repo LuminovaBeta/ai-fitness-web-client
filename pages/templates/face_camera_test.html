@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>AI 体测机 - 实时摄像头人脸测试</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px; display: flex; gap: 20px; }
+        .panel { flex: 1; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        .logger { flex: 1; background: #1e1e1e; color: #4af626; padding: 20px; border-radius: 8px; height: 85vh; overflow-y: auto; font-family: monospace; font-size: 13px; }
+        .video-container { width: 100%; max-width: 640px; margin: 0 auto 20px; background: #000; border-radius: 8px; overflow: hidden; position: relative; }
+        video { width: 100%; height: auto; display: block; transform: scaleX(-1); /* 镜像翻转，符合照镜子直觉 */ }
+        .controls { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+        button { padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; color: white; transition: 0.2s; }
+        .btn-start { background: #28a745; }
+        .btn-stop { background: #dc3545; }
+        .btn-action { background: #007bff; font-size: 16px; padding: 12px 24px; }
+        button:disabled { background: #6c757d; cursor: not-allowed; opacity: 0.7; }
+        .token-box { margin-bottom: 20px; padding: 15px; background: #e9ecef; border-radius: 6px; }
+        input[type="text"] { width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+    </style>
+</head>
+<body>
+
+<div class="panel">
+    <h2>📷 边缘端摄像头实时测试面板</h2>
+    
+    <div class="token-box">
+        <label><strong>当前系统 JWT Token (用于人脸录入鉴权):</strong></label>
+        <input type="text" id="jwt-input" placeholder="请先在此处粘贴Token，或在之前的测试页登录后自动读取">
+        <small style="color: #666; display: block; margin-top: 5px;">* 人脸登录无需Token；但录入（绑定人脸）必须提供当前用户的Token。</small>
+    </div>
+
+    <div class="controls">
+        <button class="btn-start" onclick="startCamera()">🟢 开启摄像头</button>
+        <button class="btn-stop" onclick="stopCamera()">🔴 关闭摄像头</button>
+    </div>
+
+    <div class="video-container">
+        <video id="videoElement" autoplay playsinline></video>
+    </div>
+    
+    <canvas id="canvasElement" style="display:none;"></canvas>
+
+    <div class="controls" style="justify-content: center;">
+        <button id="btn-register" class="btn-action" onclick="captureAndSend('/api/auth/face-register/')" disabled>
+            👤 截帧 -> 绑定当前账号 (录入)
+        </button>
+        <button id="btn-login" class="btn-action" style="background: #17a2b8;" onclick="captureAndSend('/api/auth/face-login/')" disabled>
+            👁️ 截帧 -> 无感人脸登录
+        </button>
+    </div>
+</div>
+
+<div class="logger">
+    <div style="border-bottom: 1px solid #4af626; padding-bottom: 10px; margin-bottom: 10px;">
+        <strong>📡 视觉算法联动日志</strong> 
+        <button onclick="document.getElementById('log').innerHTML=''" style="float: right; padding: 2px 8px; background: #555;">清屏</button>
+    </div>
+    <div id="log"></div>
+</div>
+
+<script>
+    const video = document.getElementById('videoElement');
+    const canvas = document.getElementById('canvasElement');
+    const btnRegister = document.getElementById('btn-register');
+    const btnLogin = document.getElementById('btn-login');
+    let stream = null;
+
+    // 页面加载时自动从 localStorage 读取之前的 token
+    document.addEventListener("DOMContentLoaded", () => {
+        const savedToken = localStorage.getItem('ai_fit_token');
+        if (savedToken) document.getElementById('jwt-input').value = savedToken;
+    });
+
+    // 终端日志打印
+    function logToTerminal(title, message, type='normal') {
+        const logDiv = document.getElementById('log');
+        const time = new Date().toLocaleTimeString();
+        let color = '#4af626'; // 默认绿
+        if(type === 'error') color = '#ff4d4d';
+        if(type === 'req') color = '#f39c12';
+        
+        let msgStr = typeof message === 'object' ? JSON.stringify(message, null, 2) : message;
+        logDiv.innerHTML += `<div style="margin-bottom: 15px;"><span style="color: #888;">[${time}] ${title}</span><br><pre style="color: ${color}; margin: 5px 0;">${msgStr}</pre></div>`;
+        logDiv.parentElement.scrollTop = logDiv.parentElement.scrollHeight;
+    }
+
+    // 1. 开启摄像头
+    async function startCamera() {
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            try {
+                // 请求视频权限，优先使用前置/默认摄像头
+                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+                video.srcObject = stream;
+                btnRegister.disabled = false;
+                btnLogin.disabled = false;
+                logToTerminal('System', '摄像头已成功开启并挂载');
+            } catch (err) {
+                logToTerminal('Camera Error', '无法访问摄像头。请确保浏览器已授权，或在 localhost/HTTPS 环境下运行。\n报错: ' + err.message, 'error');
+            }
+        } else {
+            logToTerminal('Browser Not Supported', '当前浏览器不支持 getUserMedia API', 'error');
+        }
+    }
+
+    // 2. 关闭摄像头
+    function stopCamera() {
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            video.srcObject = null;
+            btnRegister.disabled = true;
+            btnLogin.disabled = true;
+            logToTerminal('System', '摄像头已关闭');
+        }
+    }
+
+    // 3. 核心：截取当前帧并转为 Base64
+    function captureFrame() {
+        // 将 canvas 的尺寸设置为与视频流一致
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        // 将 video 当前帧画到 canvas 上
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        // 导出为 JPEG 格式的 base64 字符串，质量压缩到 0.8
+        const base64Image = canvas.toDataURL('image/jpeg', 0.8);
+        return base64Image;
+    }
+
+    // 4. 发送人脸数据给后端
+    async function captureAndSend(endpoint) {
+        if (!stream) {
+            alert("请先开启摄像头！");
+            return;
+        }
+
+        const base64Data = captureFrame();
+        logToTerminal(`Action: ${endpoint}`, '正在向后端发送抓取的视频帧...', 'req');
+
+        const headers = { 'Content-Type': 'application/json' };
+        
+        // 如果是录入人脸，必须带上 token
+        if (endpoint.includes('face-register')) {
+            const token = document.getElementById('jwt-input').value.trim();
+            if (!token) {
+                logToTerminal('Error', '录入人脸需要先提供账号的 JWT Token！请先登录。', 'error');
+                alert("缺少 JWT Token，请在上方输入框填入您的 Token");
+                return;
+            }
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
+        try {
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({ face_data: base64Data })
+            });
+            
+            const data = await response.json().catch(() => ({}));
+
+            // 如果后端返回了防误判拦截的 200 状态码
+            if (response.ok && data.code && data.code !== "SUCCESS" && data.code !== "AUTH_SUCCESS" && data.code !== "ENROLL_SUCCESS") {
+                logToTerminal(`[拦截提示] 状态: ${data.code}`, data.msg, 'error');
+                return;
+            }
+
+            if (response.ok) {
+                logToTerminal(`[成功] Response`, data);
+                // 如果是登录成功，顺便把最新的 Token 存下来，方便你去另一个页面测别的 API
+                if (data.access) {
+                    localStorage.setItem('ai_fit_token', data.access);
+                    document.getElementById('jwt-input').value = data.access;
+                }
+            } else {
+                logToTerminal(`[报错 ${response.status}] Response`, data, 'error');
+            }
+        } catch (error) {
+            logToTerminal(`Fetch Failed`, error.message, 'error');
+        }
+    }
+</script>
+</body>
+</html>
