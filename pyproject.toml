@@ -10,6 +10,10 @@ dependencies = [
     "djangorestframework>=3.17.1",
     "djangorestframework-simplejwt>=5.5.1",
     "edge-tts>=7.2.8",
+    "insightface>=1.0.1",
+    "numpy>=2.4.6",
+    "onnxruntime>=1.27.0",
+    "opencv-python-headless>=5.0.0.93",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
 ]
