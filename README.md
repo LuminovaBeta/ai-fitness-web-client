@@ -1,5 +1,9 @@
 部署：
 ```
+git lfs install
+
+git lfs pull
+
 #同步项目
 uv sync
 
@@ -93,33 +97,87 @@ uv run manage.py runserver 0.0.0.0:8000
 
 ---
 
-## 贰、 API 接口列表设计 (RESTful)
+## 贰、 核心 API 接口列表 (RESTful & JWT)
 
-基于 Django REST Framework + Simple JWT 实现。业务接口高度解耦。
+系统基于 Django REST Framework 构建，采用 Simple JWT 进行无状态鉴权。接口设计高度解耦，并针对边缘端一体机的交互场景（如底层硬件发声、异步 AI 分析）进行了深度定制。
 
-### 模块 1：设备驻留与视觉认证 (Auth & Face CV)
+### 模块 1：认证与人脸视觉 (Auth & Face CV)
 
-* `POST /api/auth/register/`：**【解耦】基础账密注册**。仅负责创建 User 和 UserProfile，并立即返回 JWT Token。不再阻塞等待大模型。
-* `POST /api/auth/face-register/`：**人脸特征录入接口**。接收边缘端传来的 512 维特征向量，保存入 UserFaceEmbedding 表。
-* `POST /api/auth/face-login/`：**无感人脸登录**。接收边缘端传来的实时人脸特征向量，后端与数据库遍历计算余弦相似度（Cosine Similarity），匹配成功即发放 JWT Token。
+* **`POST /api/auth/register/`：基础注册初始化**
+* **功能**：无需鉴权。接收 `username`, `password` 以及可选的身体参数（`gender`, `height`, `weight`），自动创建 User 并初始化 `UserProfile` 身体档案表，直接下发 JWT 访问与刷新令牌。
 
-### 模块 2：用户主页与智能管家 (Dashboard & Chatbot)
 
-* `GET /api/user/dashboard/`：**主页聚合接口**，一次性拉取基础档案、今日计划、近7天负荷。
-* `POST /api/chat/ask/`：**个人运动数据库伴侣接口**。接收用户聊天提问，后端将其与用户的历史数据打包，喂给本地大模型生成个性化回复。
+* **`POST /api/auth/login/`：账号密码登录**
+* **功能**：常规账密校验，成功后返回 JWT。
 
-### 模块 3：训练计划与控制 (Train)
 
-* `POST /api/plan/init-generate/`：**【新增】初始化计划生成接口**。注册后由前端自动调用，传入用户自然语言目标。后端大模型生成 JSON 后存入 TrainingPlan。
-* `GET /api/plan/current/`：获取当前激活的训练计划详情。
-* `POST /api/train/micro-coach/`：**组间话疗接口**。接收上一组的动作错误码，调用本地小规模 LLM 快速生成一两句鼓励与纠正话语，直接触发后端底层语音播报。
-* `POST /api/train/finish/`：**核心中枢结算接口（支持异步）**。
-* **Payload**: 包含客观体征、主观 RPE 及静息时序数组。
-* **Backend Logic**:
-1. Django 立即落盘 `Activity` 和 `ActivityTimeSeries`。
-2. **响应分离**：立即向前端返回 HTTP 202 Accepted (数据已保存，AI正在分析中) 以及一个 `activity_id`。
-3. 后端启动后台异步线程/任务 (Task)，由本地大模型慢速推理评估、生成报告。
-4. **LLM 直接修改计划数据库**：如果是引导模式 (GUIDED)，大模型根据表现直接生成新的 JSON 计划结构，后端自动将其覆写更新至数据库的 TrainingPlan 表中。
+* **`POST /api/auth/face-register/`：人脸特征录入 (需 JWT)**
+* **功能**：接收前端传来的摄像头 Base64 实时流。后端调用 `process_face_pipeline` 执行严格的距离与姿态防误判校验，通过后提取 512 维特征，落盘或覆写至 `UserFaceEmbedding` 库，并触发“人脸录入成功”系统语音。
+
+
+* **`POST /api/auth/face-login/`：无感扫脸登录**
+* **功能**：接收 Base64 数据流，经防误判管道后，调用 `verify_face_1_to_N` 进行全局特征库遍历（计算余弦相似度）。匹配成功直接发放 JWT，实现“走近即登录”的 Kiosk 体验。
+
+
+
+### 模块 2：主页聚合与用户数据 (Dashboard & Data)
+
+* **`GET /api/user/dashboard/`：主页超级聚合面板**
+* **功能**：一次性拉取一体机主页所需的所有核心数据。包括基础档案、近 7 日总训练耗时、**今日计划精准进度计算**（底层遍历 JSON 计划与今日真实运动记录比对），并动态触发系统级入场语音（如：“欢迎回来，今天还有进度未完成”）。
+
+
+* **`GET /api/user/load/`：滚动训练负荷评估**
+* **功能**：聚合查询近 7 天的所有 Activity，依据强度权重算法（高强度x3，中强度x2，低强度x1）和时长，推算出一个客观的滚动负荷值，并返回阶段性健康状态评估（如“高效训练量”或“高负荷运转”）。
+
+
+* **`GET /api/user/activities/`：历史运动记录列表**
+* **功能**：返回用户历史宏观运动表现的精简列表（耗时、总次数、AI 评分等）。
+
+
+* **`GET /api/user/activities/<pk>/`：单次训练深度详情**
+* **功能**：联表查询单次运动的宏观数据、AI 复盘报告详情（`ai_feedback`），以及按时间戳排序的 `sensor_data_series`（高频心率/血氧变化阵列），用于前端绘制专业级数据复盘曲线。
+
+
+* **`GET /api/train/status/<pk>/`：训练分析状态轮询**
+* **功能**：提供给前端在训练结束后轮询，检查对应的 Activity 是否已绑定 AI 生成的反馈报告，从而切换“分析中”和“分析完成”的 UI 状态。
+
+
+
+### 模块 3：AI 教练与训练中枢 (Training & AI)
+
+* **`POST /api/plan/init-generate/`：AI 初始计划生成**
+* **功能**：新用户注册后，前端携带目标（如“减脂塑形”）调用。后端结合用户档案身高体重，调度 LLM 生成结构化 JSON 训练计划落盘。自带容灾机制，若大模型拥堵会自适应下发基础兜底计划。
+
+
+* **`GET / POST /api/plan/current/`：当前训练计划读写**
+* **功能**：获取当前处在 `is_active=True` 状态的计划。POST 请求可用于用户或大模型直接覆盖生成全新的 JSON 计划。
+
+
+* **`POST /api/train/micro-coach/`：组间话疗微指导**
+* **功能**：训练间歇期调用。传入当前动作和错误类型，由 LLM 极速生成简短纠正话术，**并直接唤起后端系统级扬声器播报**，全程不阻塞前端页面流程。
+
+
+* **`POST /api/train/finish/`：核心训练结算中枢 (异步高并发)**
+* **核心逻辑**：
+1. **极速落盘**：同步将主观感受、客观强度以及大批量 `time_series` (高质静息心率血氧数组) 落盘，立即返回 `HTTP 202 Accepted`。
+2. **异步进化**：后端剥离出独立的 `threading.Thread` 进行 LLM 深度复盘任务。
+3. **闭环覆写**：子线程中大模型分析表现后，自动更新运动质量分 `quality_score`、落盘 `AIFeedback` 评语，并**直接静默覆写下周的训练计划表**。最终在 `finally` 块中安全释放数据库连接。
+
+
+
+* **`POST /api/chat/ask/`：本地 RAG 运动伴侣**
+* **功能**：智能健身体测机的 AI 语音管家。后端动态计算用户近 7 日耗时、真实运动强度偏好以及上一次教练评语，**精准注入 Prompt (RAG 机制)** 喂给大模型。拒绝 AI 瞎编数据，随后驱动系统扬声器将文本转语音回答用户。
+
+
+* **`GET /api/train/exercises/`：标准动作字典查询**
+* **功能**：供前端“自由训练”模式调用的下拉选单，直接从 Django Models 动态抽取合法的业务动作池。
+
+
+
+### 模块 4：系统底层交互 (System)
+
+* **`POST /api/train/tts-play/`：哑终端全局系统发声**
+* **功能**：跨越浏览器安全限制的神器。前端或局域网设备只需传入 `text` 和可选音色（如 `zh-CN-YunyangNeural`），后端直接驱动 RK3588 或开发机的物理声卡进行非阻塞音频播放。
 
 
 

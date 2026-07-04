@@ -1,73 +1,86 @@
-基于我们前面进行的一系列深度重构和业务完善，你的后端系统已经具备了极高的工程成熟度（涵盖了异步处理、轮询机制、动静数据分离等）。
-
-我为你重新编写了 `README.md` 中 **“贰、 API 接口列表设计”** 以及 **“伍、 后端业务框架”** 的部分。你可以直接将以下内容替换到你的 `README.md` 文件中对应的章节。
+基于你上传的最新 `views.py` 完整源码，我已经为你提取并完善了 `README.md` 中的 **API 接口列表** 部分。这部分内容现在完全贴合你真实的后端业务逻辑、数据结构以及异步处理机制，你可以直接复制替换原 README 中的对应章节。
 
 ---
 
-## 贰、 API 接口列表设计 (RESTful)
+## 贰、 核心 API 接口列表 (RESTful & JWT)
 
-基于 Django REST Framework + Simple JWT 实现，业务接口高度解耦。针对边缘硬件的高低频数据特性，采用了**异步处理与长轮询结合**的架构。
+系统基于 Django REST Framework 构建，采用 Simple JWT 进行无状态鉴权。接口设计高度解耦，并针对边缘端一体机的交互场景（如底层硬件发声、异步 AI 分析）进行了深度定制。
 
-### 模块 1：设备驻留与视觉认证 (Auth & Face CV)
+### 模块 1：认证与人脸视觉 (Auth & Face CV)
 
-* `POST /api/auth/register/`：**基础账密注册**。仅负责创建 User 和 UserProfile，并返回 JWT Token。
-* `POST /api/auth/login/`：**传统账密登录**。获取 JWT Token。
-* `POST /api/auth/face-register/`：**人脸特征绑定接口 (录入)**。接收边缘端传来的截帧 Base64，由本地 ONNX 引擎提取 512 维特征向量，存入 `UserFaceEmbedding`。
-* `POST /api/auth/face-login/`：**无感人脸登录 (1:N 检索)**。接收边缘端实时的 Bbox 和 Base64 截帧，后端与数据库遍历计算余弦相似度，防误判拦截（如未正视、距离过远），匹配成功即发放 JWT Token 并触发硬件底层 TTS 欢迎。
-
-### 模块 2：数据查询与聚合 (Data & Dashboard)
-
-* `GET /api/user/dashboard/`：**主页聚合接口**。一次性拉取基础档案、今日计划，并内置“今日任务完成度算法”，动态计算实际运动记录与目标计划的重合度（百分比）。
-* `GET /api/user/load/`：**滚动负荷计算**。自动查询并聚合过去 7 天的运动耗时与强度，返回综合健康状态评估。
-* `GET /api/user/activities/`：**宏观历史记录**。获取轻量级的历史训练列表。
-* `GET /api/user/activities/<id>/`：**单次训练深度详情 (含心率血氧图谱)**。不仅返回表单数据，还会全量返回 `time_series` 传感器数组，供前端 ECharts 渲染恢复曲线，并附带大模型生成的 `ai_report` 评语。
-
-### 模块 3：训练计划管理 (Plan Engine)
-
-* `POST /api/plan/init-generate/`：**AI 计划初始化**。传入自然语言目标，调用本地大模型生成结构化 JSON 排期。
-* `GET / POST /api/plan/current/`：**当前激活计划管理**。支持读取当前正在执行的计划，或接受前端传来的新 JSON 数组手动覆写并激活新计划。
-* `GET /api/train/exercises/`：**【新增】动作字典库**。暴露系统目前支持的所有运动列表，供前端在“自由训练”模式下生成下拉菜单。
-
-### 模块 4：核心训练中枢与 LLM (Train & AI)
-
-* `POST /api/chat/ask/`：**RAG 私教问答**。检索用户最近 7 天的真实宏观数据与上一次的教练评语作为背景知识，拒绝大模型“幻觉”瞎编。
-* `POST /api/train/micro-coach/`：**组间话疗接口**。根据抓取到的动作变形错误码，调用轻量 LLM 快速生成短文本，直通底层 TTS 播报。
-* `POST /api/train/finish/`：**🏅 核心异步结算接口**。
-* **Payload (防网络阻塞设计)**：接收运动耗时、动作错误次数、客观强度，以及**在前端内存中暂存的 `time_series`（心率血氧数组）**。
-* **响应分离**：Django 立即落盘基础数据与高频数据，返回 `HTTP 202 Accepted` 以及 `activity_id`，绝不阻塞 Kiosk 前端画面。并在此刻**唤起后台独立大模型评估线程**。
+* **`POST /api/auth/register/`：基础注册初始化**
+* **功能**：无需鉴权。接收 `username`, `password` 以及可选的身体参数（`gender`, `height`, `weight`），自动创建 User 并初始化 `UserProfile` 身体档案表，直接下发 JWT 访问与刷新令牌。
 
 
-* `GET /api/train/status/<id>/`：**【新增】AI 分析状态轮询**。配合上述异步结算接口使用。前端拿到 `activity_id` 后开启 3 秒一轮的静默轮询，直到后端返回 `status: COMPLETED`，前端立刻弹出“报告已生成”的气泡通知并播放语音。
-
----
-
-## 伍、 后端业务框架 (Django + 本地 LLM 协同)
-
-### 1. 大模型配置解耦 (YAML 静态配置)
-
-在 `config/llm_rules.yaml` 中维护动作库字典、判定阈值以及 Prompt 模板骨架。`services/llm_service.py` 运行时直接读取 YAML 进行动态变量注入，支持随时热调参，无需重启 Django 服务。
-
-### 2. 异步大模型协同工作流 (LLM Service Layer)
-
-大模型的推理可能耗时数秒到十几秒，为保障边缘设备的极度流畅，核心链路（特别是运动后结算）采用 **异步非阻塞 (Async/Thread) + 状态轮询 (Polling)** 的企业级架构。
-
-在 `services/llm_service.py` 和 `api/views.py` 中，划分为以下场景：
-
-* **场景一：组间休息极速短评 (Micro-Coaching)**
-向本地 LLM 请求极短的 `max_tokens`，确保存几秒内返回文字供底层转换语音，不阻塞下一组运动倒计时。
-* **场景二：复盘评估与计划自进化 (Post-Workout Auto-Update)**
-* **影子线程运作**：在 `TrainFinishView` 中触发，由 `threading.Thread` 在后台静默运行。
-* **主客观交叉验证**：后台线程通过 ORM 动态聚合刚刚入库的 `ActivityTimeSeries`，得出真实的“恢复期平均心率”与“最低血氧”，加上用户表单提交的主观疲劳度 (RPE)，组装成超级 Prompt 交给大模型。
-* **数据库静默覆写**：大模型生成结论后，线程主动写入 `AIFeedback` 表并更新主表的 `quality_score`；如果触发了负荷调整，线程将直接覆写作废旧的 `TrainingPlan` 并插入新计划。整个过程零人工干预，直到前端轮询探测到完成。
+* **`POST /api/auth/login/`：账号密码登录**
+* **功能**：常规账密校验，成功后返回 JWT。
 
 
-* **场景三：真实感 RAG 数据伴侣 (Local Data Chatbot)**
-* 利用 `Sum` 等 Django 聚合函数，动态提取近 7 天的总耗时、占比最高的训练强度（如“高强度”），以及上一次的私教评语，注入到聊天 Prompt 模板中。这赋予了体测机本地私有且高度精准的记忆能力。
+* **`POST /api/auth/face-register/`：人脸特征录入 (需 JWT)**
+* **功能**：接收前端传来的摄像头 Base64 实时流。后端调用 `process_face_pipeline` 执行严格的距离与姿态防误判校验，通过后提取 512 维特征，落盘或覆写至 `UserFaceEmbedding` 库，并触发“人脸录入成功”系统语音。
+
+
+* **`POST /api/auth/face-login/`：无感扫脸登录**
+* **功能**：接收 Base64 数据流，经防误判管道后，调用 `verify_face_1_to_N` 进行全局特征库遍历（计算余弦相似度）。匹配成功直接发放 JWT，实现“走近即登录”的 Kiosk 体验。
 
 
 
-### 3. 数据隔离与健壮性保障
+### 模块 2：主页聚合与用户数据 (Dashboard & Data)
 
-* **心率血氧降压**：绝不开启实时独立接口上传心率血氧。硬件数据缓存在前端 JS 内存中，直到训练 `END` 后打包批量上传（Bulk Create）。
-* **连接池防漏**：在后台所有大模型计算线程结束（或发生异常崩溃）时，通过 `try...finally` 与 `connection.close()` 强制回收 Django 数据库连接，杜绝设备长时间运行后出现的 `too many clients` 错误。
-* **JSON 容错正则提取**：在所有大模型生成结构化 JSON 的场景中，引入 `re.DOTALL` 正则贪婪匹配，智能剔除大模型可能吐出的前置解释废话（如 "好的，为您生成如下计划："），极大降低 JSON 反序列化崩溃率。
+* **`GET /api/user/dashboard/`：主页超级聚合面板**
+* **功能**：一次性拉取一体机主页所需的所有核心数据。包括基础档案、近 7 日总训练耗时、**今日计划精准进度计算**（底层遍历 JSON 计划与今日真实运动记录比对），并动态触发系统级入场语音（如：“欢迎回来，今天还有进度未完成”）。
+
+
+* **`GET /api/user/load/`：滚动训练负荷评估**
+* **功能**：聚合查询近 7 天的所有 Activity，依据强度权重算法（高强度x3，中强度x2，低强度x1）和时长，推算出一个客观的滚动负荷值，并返回阶段性健康状态评估（如“高效训练量”或“高负荷运转”）。
+
+
+* **`GET /api/user/activities/`：历史运动记录列表**
+* **功能**：返回用户历史宏观运动表现的精简列表（耗时、总次数、AI 评分等）。
+
+
+* **`GET /api/user/activities/<pk>/`：单次训练深度详情**
+* **功能**：联表查询单次运动的宏观数据、AI 复盘报告详情（`ai_feedback`），以及按时间戳排序的 `sensor_data_series`（高频心率/血氧变化阵列），用于前端绘制专业级数据复盘曲线。
+
+
+* **`GET /api/train/status/<pk>/`：训练分析状态轮询**
+* **功能**：提供给前端在训练结束后轮询，检查对应的 Activity 是否已绑定 AI 生成的反馈报告，从而切换“分析中”和“分析完成”的 UI 状态。
+
+
+
+### 模块 3：AI 教练与训练中枢 (Training & AI)
+
+* **`POST /api/plan/init-generate/`：AI 初始计划生成**
+* **功能**：新用户注册后，前端携带目标（如“减脂塑形”）调用。后端结合用户档案身高体重，调度 LLM 生成结构化 JSON 训练计划落盘。自带容灾机制，若大模型拥堵会自适应下发基础兜底计划。
+
+
+* **`GET / POST /api/plan/current/`：当前训练计划读写**
+* **功能**：获取当前处在 `is_active=True` 状态的计划。POST 请求可用于用户或大模型直接覆盖生成全新的 JSON 计划。
+
+
+* **`POST /api/train/micro-coach/`：组间话疗微指导**
+* **功能**：训练间歇期调用。传入当前动作和错误类型，由 LLM 极速生成简短纠正话术，**并直接唤起后端系统级扬声器播报**，全程不阻塞前端页面流程。
+
+
+* **`POST /api/train/finish/`：核心训练结算中枢 (异步高并发)**
+* **核心逻辑**：
+1. **极速落盘**：同步将主观感受、客观强度以及大批量 `time_series` (高质静息心率血氧数组) 落盘，立即返回 `HTTP 202 Accepted`。
+2. **异步进化**：后端剥离出独立的 `threading.Thread` 进行 LLM 深度复盘任务。
+3. **闭环覆写**：子线程中大模型分析表现后，自动更新运动质量分 `quality_score`、落盘 `AIFeedback` 评语，并**直接静默覆写下周的训练计划表**。最终在 `finally` 块中安全释放数据库连接。
+
+
+
+
+* **`POST /api/chat/ask/`：本地 RAG 运动伴侣**
+* **功能**：智能健身体测机的 AI 语音管家。后端动态计算用户近 7 日耗时、真实运动强度偏好以及上一次教练评语，**精准注入 Prompt (RAG 机制)** 喂给大模型。拒绝 AI 瞎编数据，随后驱动系统扬声器将文本转语音回答用户。
+
+
+* **`GET /api/train/exercises/`：标准动作字典查询**
+* **功能**：供前端“自由训练”模式调用的下拉选单，直接从 Django Models 动态抽取合法的业务动作池。
+
+
+
+### 模块 4：系统底层交互 (System)
+
+* **`POST /api/train/tts-play/`：哑终端全局系统发声**
+* **功能**：跨越浏览器安全限制的神器。前端或局域网设备只需传入 `text` 和可选音色（如 `zh-CN-YunyangNeural`），后端直接驱动 RK3588 或开发机的物理声卡进行非阻塞音频播放。
