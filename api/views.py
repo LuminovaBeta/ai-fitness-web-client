@@ -518,11 +518,11 @@ class DashboardView(APIView):
                 if total_target_reps > 0:
                     progress_percent = round((total_actual_reps / total_target_reps) * 100)
 
-        # 4. 入场语音欢迎（硬件直接发声）
-        if today_completed:
-            play_tts_sync(f"欢迎回来 {user.username}，您今天已经完成了今天所有训练任务！")
-        else:
-            play_tts_sync(f"欢迎回来 {user.username}，今天还有进度未完成，继续努力。")
+        # 4. 入场语音欢迎（硬件直接发声）(改到前端调用)
+        # if today_completed:
+        #     play_tts_sync(f"欢迎回来 {user.username}，您今天已经完成了今天所有训练任务！")
+        # else:
+        #     play_tts_sync(f"欢迎回来 {user.username}，今天还有进度未完成，继续努力。")
 
         return Response({
             "user_info": {
@@ -779,13 +779,12 @@ class TTSPlayView(APIView):
             return Response({"error": "播放文本不能为空"}, status=status.HTTP_400_BAD_REQUEST)
             
         try:
-            # 调度系统底层扬声器 (非阻塞)
-            play_tts_sync(text, voice=voice)
-            
+            duration = play_tts_sync(text, voice=voice)
             return Response({
                 "msg": "系统扬声器已触发播报", 
                 "played_text": text,
-                "voice": voice
+                "voice": voice,
+                "duration": round(duration, 2) # 传给前端
             }, status=status.HTTP_200_OK)
             
         except Exception as e:

@@ -24,4 +24,5 @@ urlpatterns = [
     path('train/finish/', views.TrainFinishView.as_view(), name='api_train_finish'),
     # 训练动作字典查询
     path('train/exercises/', views.ExerciseDictionaryView.as_view(), name='api_train_exercises'),
+    path('train/tts-play/', views.TTSPlayView.as_view(), name='api_train_tts_play'),
 ]

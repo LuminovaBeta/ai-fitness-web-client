@@ -6,11 +6,13 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "django>=5.2.15",
+    "django-cors-headers>=4.9.0",
     "django-sass-processor>=1.4.2",
     "djangorestframework>=3.17.1",
     "djangorestframework-simplejwt>=5.5.1",
     "edge-tts>=7.2.8",
     "insightface>=1.0.1",
+    "mutagen>=1.48.1",
     "numpy>=2.4.6",
     "onnxruntime>=1.27.0",
     "opencv-python-headless>=5.0.0.93",

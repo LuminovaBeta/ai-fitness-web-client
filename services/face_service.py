@@ -104,7 +104,7 @@ def process_face_pipeline(base64_image_str):
     width_ratio = face_width / img_w
     
     if width_ratio < 0.28: # 工业级阈值，确保用户已经走到体测机前凑近
-        return "TOO_FAR", "请靠近体测一体机摄像头", None
+        return "TOO_FAR", "请靠近摄像头", None
 
     # 5. 防误判机制二：正对校验（利用5点关键点计算面部偏角，防止侧脸或低头误扫）
     # 如果推理引擎直接输出了 pose 角 [pitch, yaw, roll]
