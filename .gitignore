@@ -80,4 +80,4 @@ logs/
 *.pot
 *.pyg
 
-*.onnx
+models/*.onnx
