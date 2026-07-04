@@ -16,7 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
-
+from django.views.generic import TemplateView
 from pages import views
 
 urlpatterns = [
@@ -29,5 +29,7 @@ urlpatterns = [
     path('live/',views.live_monitoring),
 
     path('api/', include('api.urls')),
+    path('test/', TemplateView.as_view(template_name="api_test.html")),
+    path('face-test/', TemplateView.as_view(template_name="face_camera_test.html")),
 
 ]

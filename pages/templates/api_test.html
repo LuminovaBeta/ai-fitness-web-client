@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>AI 智能健身中控 - 全量 API 测试面板 (含心率血氧流)</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f4f4f9; margin: 0; padding: 20px; display: flex; gap: 20px; }
+        .panel { flex: 1.3; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 90vh; overflow-y: auto; }
+        .logger { flex: 0.7; background: #1e1e1e; color: #4af626; padding: 20px; border-radius: 8px; max-height: 90vh; overflow-y: auto; font-family: monospace; font-size: 13px; line-height: 1.4; }
+        h1, h2, h3 { color: #333; margin-top: 0; }
+        .section { margin-bottom: 20px; padding: 15px; border: 1px solid #e0e0e0; border-radius: 6px; background: #fafafa; }
+        .section h3 { margin-bottom: 15px; border-bottom: 2px solid #ddd; padding-bottom: 5px; color: #444; }
+        input, select, button, textarea { padding: 8px 10px; margin: 5px 0; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; font-family: inherit; font-size: 13px;}
+        textarea { width: 100%; height: 60px; resize: vertical; }
+        button { cursor: pointer; transition: 0.2s; font-weight: bold; border: none; color: white; }
+        button:hover { opacity: 0.8; }
+        .btn-post { background-color: #d35400; }
+        .btn-get { background-color: #2980b9; }
+        .btn-danger { background-color: #c0392b; }
+        .btn-success { background-color: #27ae60; }
+        .btn-info { background-color: #8e44ad; }
+        .token-display { background: #e9ecef; padding: 12px; border-radius: 6px; font-size: 13px; margin-bottom: 20px; border-left: 4px solid #27ae60; }
+        .form-group { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+        .api-path { display: inline-block; background: #eee; padding: 2px 6px; border-radius: 4px; font-family: monospace; color: #d35400; font-size: 12px; margin-right: 10px;}
+        .api-path.get { color: #2980b9; }
+        
+        /* 心率血氧缓存区专属样式 */
+        .sensor-buffer-box { background: #e8f4f8; border: 1px dashed #3498db; padding: 10px; border-radius: 6px; margin-top: 10px; }
+        .buffer-list { max-height: 100px; overflow-y: auto; background: white; border: 1px solid #ddd; padding: 5px; font-size: 12px; margin-top: 5px;}
+    </style>
+</head>
+<body>
+
+<div class="panel">
+    <h1>🚀 边缘设备 API 全栈联调中心</h1>
+    
+    <div class="token-display">
+        <strong>🔑 设备当前用户 Token: </strong> <br>
+        <span id="token-text" style="color: #666; word-break: break-all; display: inline-block; margin-top: 5px;">未获取 (请先登录或注册)</span>
+        <div style="margin-top: 10px;">
+            <button class="btn-danger" onclick="clearToken()" style="padding: 4px 10px; font-size: 12px;">清除当前 Token</button>
+        </div>
+    </div>
+
+    <div class="section">
+        <h3>1. 鉴权体系 (Auth & CV)</h3>
+        <div class="form-group">
+            <span class="api-path">POST /auth/register/</span>
+            <input type="text" id="reg-user" placeholder="用户名" value="testuser01">
+            <input type="password" id="reg-pwd" placeholder="密码" value="123456">
+            <button class="btn-post" onclick="testApi('/api/auth/register/', 'POST', {username: $('#reg-user'), password: $('#reg-pwd'), gender: 'M', height: 175, weight: 70})">注册基础账号</button>
+        </div>
+        <div class="form-group">
+            <span class="api-path">POST /auth/login/</span>
+            <button class="btn-post" onclick="testApi('/api/auth/login/', 'POST', {username: $('#reg-user'), password: $('#reg-pwd')})">账密登录获取Token</button>
+        </div>
+        <div class="form-group" style="margin-top: 10px;">
+            <input type="file" id="face-file" accept="image/*" onchange="convertToBase64()">
+            <input type="hidden" id="face-base64">
+        </div>
+        <div class="form-group">
+            <span class="api-path">POST /auth/face-register/</span>
+            <button class="btn-post" onclick="testApi('/api/auth/face-register/', 'POST', {face_data: $('#face-base64')})">将照片录入库 (绑定当前Token)</button>
+        </div>
+        <div class="form-group">
+            <span class="api-path">POST /auth/face-login/</span>
+            <button class="btn-post" onclick="testApi('/api/auth/face-login/', 'POST', {face_data: $('#face-base64')})">发起人脸识别免密登录</button>
+        </div>
+    </div>
+
+    <div class="section">
+        <h3>2. 宏观数据查询 (Dashboards)</h3>
+        <div class="form-group">
+            <span class="api-path get">GET /train/exercises/</span>
+            <button class="btn-get" onclick="testApi('/api/train/exercises/', 'GET')">
+                🏋️‍♂️ 获取系统支持的自由训练动作库
+            </button>
+        </div>
+        <div class="form-group">
+            <span class="api-path get">GET /user/dashboard/</span>
+            <button class="btn-get" onclick="testApi('/api/user/dashboard/', 'GET')">用户主页聚合 (档案/今日计划)</button>
+        </div>
+        <div class="form-group">
+            <span class="api-path get">GET /user/load/</span>
+            <button class="btn-get" onclick="testApi('/api/user/load/', 'GET')">近期训练负荷 (滚动7天)</button>
+        </div>
+        <div class="form-group">
+            <span class="api-path get">GET /user/activities/</span>
+            <button class="btn-get" onclick="testApi('/api/user/activities/', 'GET')">拉取历史所有训练记录</button>
+        </div>
+        <div class="form-group" style="margin-top: 15px; border-top: 1px dashed #ccc; padding-top: 10px;">
+            <span class="api-path get">GET /user/activities/{id}/</span>
+            记录 ID: <input type="number" id="detail-act-id" value="1" style="width: 60px;">
+            <button class="btn-get" onclick="testApi('/api/user/activities/' + $('#detail-act-id') + '/', 'GET')">
+                🔍 拉取单次训练详情 (含心率血氧波形数据)
+            </button>
+        </div>
+    </div>
+
+    <div class="section">
+        <h3>3. 训练计划 (Plan Engine)</h3>
+        <div class="form-group">
+            <span class="api-path">POST /plan/init-generate/</span>
+            <input type="text" id="plan-goal" placeholder="大模型初始目标" value="加强核心力量">
+            <button class="btn-post" onclick="testApi('/api/plan/init-generate/', 'POST', {goal: $('#plan-goal')})">一键调度大模型生成排期计划</button>
+        </div>
+        <div class="form-group" style="margin-top: 10px;">
+            <span class="api-path get">GET /plan/current/</span>
+            <button class="btn-get" onclick="testApi('/api/plan/current/', 'GET')">获取当前激活的完整 JSON 计划</button>
+        </div>
+    </div>
+
+    <div class="section">
+        <h3>4. 私教话疗交互 (Micro-Coaching & RAG)</h3>
+        <div class="form-group">
+            <span class="api-path">POST /chat/ask/</span>
+            <input type="text" id="chat-msg" placeholder="向私教提问..." value="基于我这几天的记录，我需要休息吗？" style="flex: 1;">
+            <button class="btn-post" onclick="testApi('/api/chat/ask/', 'POST', {message: $('#chat-msg')})">提问触发 RAG 检索</button>
+        </div>
+        <div class="form-group">
+            <span class="api-path">POST /train/micro-coach/</span>
+            <input type="text" id="coach-act" placeholder="动作" value="深蹲" style="width: 70px;">
+            <input type="text" id="coach-err" placeholder="错误" value="膝盖内扣" style="width: 100px;">
+            <button class="btn-post" onclick="testApi('/api/train/micro-coach/', 'POST', {activity_type: $('#coach-act'), error_text: $('#coach-err')})">生成动作微指导话术 (直通TTS)</button>
+        </div>
+    </div>
+
+    <div class="section" style="border-color: #27ae60; border-width: 2px;">
+        <h3>5. 🏅 核心训练结算与后台评估 (含心率血氧流)</h3>
+        <span class="api-path">POST /train/finish/</span>
+        
+        <div class="sensor-buffer-box">
+            <strong>🩸 模拟前端设备心率血氧采样器 (时序数据组装)</strong>
+            <div class="form-group" style="margin-top: 5px;">
+                时间偏移(s): <input type="number" id="ts-offset" value="60" style="width:60px;">
+                阶段: <select id="ts-phase"><option value="REST">休息(REST)</option><option value="END">结束(END)</option></select>
+                心率(BPM): <input type="number" id="ts-hr" value="135" style="width:60px;">
+                血氧(%): <input type="number" id="ts-spo2" value="98" style="width:60px;">
+                累计次数: <input type="number" id="ts-rep" value="15" style="width:60px;">
+                <button class="btn-info" onclick="addTimeSeriesData()">+ 压入内存缓存</button>
+            </div>
+            <div class="buffer-list" id="buffer-display">暂无采集数据...</div>
+        </div>
+
+        <div class="form-group" style="margin-top: 15px;">
+            消耗时长(秒): <input type="number" id="f-duration" value="1800" style="width: 70px;">
+            目标次数: <input type="number" id="f-target" value="100" style="width: 60px;">
+            完成次数: <input type="number" id="f-total" value="105" style="width: 60px;">
+            动作变形(次): <input type="number" id="f-error" value="3" style="width: 60px;">
+        </div>
+        <div class="form-group">
+            系统客观强度: <select id="f-intensity"><option value="HIGH">高(HIGH)</option><option value="MED" selected>中(MED)</option><option value="LOW">低(LOW)</option></select>
+            主观疲劳 RPE (1-5): <input type="number" id="f-rpe" value="4" style="width: 60px;">
+        </div>
+        <div class="form-group" style="margin-top: 15px;">
+            <button class="btn-success" style="width: 100%; padding: 15px; font-size: 16px;" onclick="submitFinishTraining()">
+                🚀 [大模型评阅] 连同表单及上方心率血氧数据，发起结算落盘！
+            </button>
+        </div>
+    </div>
+</div>
+
+<div class="logger">
+    <div style="border-bottom: 1px solid #4af626; padding-bottom: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+        <strong>📡 API 请求响应终端</strong> 
+        <button onclick="document.getElementById('log').innerHTML=''" style="padding: 4px 10px; font-size: 12px; background: #555; color: white;">清空日志</button>
+    </div>
+    <div id="log"></div>
+</div>
+
+<script>
+    // -----------------------------------------
+    // 1. 全局状态与基础配置
+    // -----------------------------------------
+    let jwtToken = localStorage.getItem('ai_fit_token') || null;
+    let timeSeriesBuffer = []; // 核心：前端心率血氧缓冲区
+    let aiPollingTimer = null;
+    const POLLING_INTERVAL = 3000; // 每 3 秒问一次
+    const MAX_ATTEMPTS = 20;       // 最多问 20 次（约1分钟），防止大模型卡死导致无限轮询
+    
+    updateTokenDisplay();
+
+    function startAIPolling(activityId) {
+        let attempts = 0;
+        
+        // 清理可能存在的旧定时器
+        if (aiPollingTimer) clearInterval(aiPollingTimer);
+        
+        // UI 提示：开始加载等待
+        showToast("AI 私教正在为您生成深度报告，请稍候...", "info");
+
+        aiPollingTimer = setInterval(async () => {
+            attempts++;
+            
+            try {
+                const headers = { 'Content-Type': 'application/json' };
+                if (jwtToken) headers['Authorization'] = `Bearer ${jwtToken}`;
+                
+                const response = await fetch(`/api/train/status/${activityId}/`, { headers });
+                const data = await response.json();
+                
+                if (response.ok && data.status === "COMPLETED") {
+                    // 🛑 1. 发现完成了，立刻停止轮询
+                    clearInterval(aiPollingTimer);
+                    
+                    // 🎉 2. 触发前端的视觉消息提醒 (弹窗/抽屉)
+                    showToast(`🎉 报告已生成！AI评分: ${data.quality_score}分`, "success");
+                    
+                    
+                    // 🔄 4. 自动跳转到报告详情页，或者自动调用上一次我们写的详情接口拉取图表
+                    // loadActivityDetail(activityId); 
+                    
+                } else if (attempts >= MAX_ATTEMPTS) {
+                    // 超时处理
+                    clearInterval(aiPollingTimer);
+                    showToast("AI 响应超时，可能是模型负载过高，请稍后在历史记录中查看。", "error");
+                }
+            } catch (error) {
+                console.error("轮询异常:", error);
+            }
+            
+        }, POLLING_INTERVAL);
+    }
+
+    // 模拟前端的消息弹窗 UI
+    function showToast(message, type) {
+        // 实际项目中这里应该是调用 Vant / Element Plus 的 Notification 组件
+        // 比如：ElNotification({ title: '提醒', message: message, type: type });
+        console.log(`[前台消息提示 - ${type}] : ${message}`);
+        logToTerminal('Notification', message, type === 'error' ? 'error' : 'info');
+    }
+
+    // 模拟前端的纯网页端语音提示
+    function speakAlert(text) {
+        if ('speechSynthesis' in window) {
+            const msg = new SpeechSynthesisUtterance(text);
+            msg.lang = 'zh-CN';
+            window.speechSynthesis.speak(msg);
+        }
+    }
+
+    // 辅助获取 DOM Value 
+    window.$ = function(selector) {
+        const el = document.querySelector(selector);
+        if (!el) return null;
+        return el.value;
+    };
+
+    function updateTokenDisplay() {
+        const display = document.getElementById('token-text');
+        if (jwtToken) {
+            display.innerText = jwtToken;
+            display.style.color = '#27ae60';
+        } else {
+            display.innerText = '未获取 (请先登录或注册)';
+            display.style.color = '#666';
+        }
+    }
+
+    function clearToken() {
+        jwtToken = null;
+        localStorage.removeItem('ai_fit_token');
+        updateTokenDisplay();
+        logToTerminal('System', 'Token 已清除', 'info');
+    }
+
+    // 图片转 Base64 
+    function convertToBase64() {
+        const file = document.getElementById('face-file').files[0];
+        const reader = new FileReader();
+        reader.onloadend = function() {
+            document.getElementById('face-base64').value = reader.result;
+            logToTerminal('System', '图片已转为 Base64，准备就绪', 'info');
+        }
+        if (file) reader.readAsDataURL(file);
+    }
+
+    // -----------------------------------------
+    // 2. 心率血氧采集模拟器 (TimeSeries)
+    // -----------------------------------------
+    function addTimeSeriesData() {
+        const ts = {
+            offset: parseInt($('#ts-offset')),
+            phase: $('#ts-phase'),
+            heart_rate: parseInt($('#ts-hr')),
+            spo2: parseInt($('#ts-spo2')),
+            current_rep: parseInt($('#ts-rep'))
+        };
+        timeSeriesBuffer.push(ts);
+        
+        // 渲染更新到前端列表
+        const displayBox = document.getElementById('buffer-display');
+        if (timeSeriesBuffer.length === 1) displayBox.innerHTML = '';
+        displayBox.innerHTML += `<div>⏱️ ${ts.offset}s | [${ts.phase}] | 💗 心率: ${ts.heart_rate} | 🩸 血氧: ${ts.spo2}% | 次数: ${ts.current_rep}</div>`;
+        
+        // 自动将下一次采集偏移时间加 60 秒，方便连续测试
+        document.getElementById('ts-offset').value = ts.offset + 60;
+    }
+
+    // -----------------------------------------
+    // 3. 网络请求核心引擎
+    // -----------------------------------------
+    async function testApi(endpoint, method, payload = null) {
+        logToTerminal(`[REQ] ${method} ${endpoint}`, payload ? payload : '无请求体 (No payload)', 'req');
+        
+        const headers = { 'Content-Type': 'application/json' };
+        if (jwtToken) headers['Authorization'] = `Bearer ${jwtToken}`;
+
+        const config = { method, headers };
+        if (payload && method !== 'GET') {
+            config.body = JSON.stringify(payload);
+        }
+
+        try {
+            const response = await fetch(endpoint, config);
+            let data;
+            
+            const textResp = await response.text();
+            try { data = textResp ? JSON.parse(textResp) : {}; } catch(e) { data = textResp; }
+
+            if (response.ok && data.access) {
+                jwtToken = data.access;
+                localStorage.setItem('ai_fit_token', jwtToken);
+                updateTokenDisplay();
+            }
+
+            if (response.ok) {
+                logToTerminal(`[RES] ${response.status} OK`, data);
+            } else {
+                logToTerminal(`[RES] ${response.status} Error`, data, 'error');
+            }
+        } catch (error) {
+            logToTerminal(`[NetWork Error]`, error.message, 'error');
+        }
+    }
+
+    // -----------------------------------------
+    // 4. 提交含生理数据的训练结算
+    // -----------------------------------------
+    async function submitFinishTraining() {
+        const payload = {
+            training_mode: "GUIDED",
+            activity_type: "mixed_plan",
+            duration: parseInt($('#f-duration')),
+            target_reps: parseInt($('#f-target')),
+            total_reps: parseInt($('#f-total')),
+            error_count: parseInt($('#f-error')),
+            intensity: $('#f-intensity'),
+            perceived_exertion: parseInt($('#f-rpe')),
+            // 压入我们用模拟器抓取的心率血氧数组！
+            time_series: timeSeriesBuffer 
+        };
+        
+        // 调用核心接口 (改造之前的 fetch 调用逻辑来截获返回的 id)
+        const headers = { 'Content-Type': 'application/json' };
+        if (jwtToken) headers['Authorization'] = `Bearer ${jwtToken}`;
+
+        try {
+            const response = await fetch('/api/train/finish/', {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+
+            if (response.status === 202 && data.activity_id) {
+                // ✅ 核心串联点：触发轮询器，传入后端的记录ID
+                startAIPolling(data.activity_id);
+            }
+            
+        } catch (error) {
+            console.error("提交失败", error);
+        }
+    }
+
+    // -----------------------------------------
+    // 5. 日志渲染器
+    // -----------------------------------------
+    function logToTerminal(title, message, type='normal') {
+        const logDiv = document.getElementById('log');
+        const time = new Date().toLocaleTimeString();
+        let color = '#4af626'; // Success
+        if(type === 'error') color = '#ff4d4d'; // Error
+        if(type === 'req') color = '#f1c40f'; // Request
+        if(type === 'info') color = '#3498db'; // Info
+        
+        let msgStr = typeof message === 'object' ? JSON.stringify(message, null, 2) : message;
+        msgStr = msgStr.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        
+        logDiv.innerHTML += `<div style="margin-bottom: 20px;"><span style="color: #aaa; font-size: 11px;">[${time}] ${title}</span><br><pre style="color: ${color}; margin: 5px 0; background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word;">${msgStr}</pre></div>`;
+        logDiv.parentElement.scrollTop = logDiv.parentElement.scrollHeight;
+    }
+</script>
+</body>
+</html>

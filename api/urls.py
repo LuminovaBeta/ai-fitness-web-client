@@ -14,9 +14,14 @@ urlpatterns = [
     path('plan/current/', views.TrainingPlanView.as_view(), name='api_plan_current'),
     path('user/load/', views.TrainingLoadView.as_view(), name='api_load'),
     path('user/dashboard/', views.DashboardView.as_view(), name='api_dashboard'),
+          #训练记录详情查询 
+    path('user/activities/<int:pk>/', views.ActivityDetailView.as_view(), name='api_activity_detail'),
+    path('train/status/<int:pk>/', views.ActivityStatusView.as_view(), name='api_train_status'),
     
     # 训练中枢与大模型交互
     path('chat/ask/', views.ChatbotView.as_view(), name='api_chat_ask'),
     path('train/micro-coach/', views.MicroCoachView.as_view(), name='api_micro_coach'),
     path('train/finish/', views.TrainFinishView.as_view(), name='api_train_finish'),
+    # 训练动作字典查询
+    path('train/exercises/', views.ExerciseDictionaryView.as_view(), name='api_train_exercises'),
 ]

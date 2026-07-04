@@ -13,11 +13,10 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
-from pages.models import UserProfile # 复用模型
 from django.utils import timezone
 import threading
 from datetime import timedelta
-from pages.models import Activity, ActivityTimeSeries, AIFeedback, TrainingPlan
+from pages.models import Activity, ActivityTimeSeries, AIFeedback, TrainingPlan, UserProfile, UserFaceEmbedding
 from services.tts_service import play_tts_sync
 from services.llm_service import generate_micro_coaching, generate_post_workout_feedback, load_yaml, call_local_llm
 from services.face_service import process_face_pipeline, verify_face_1_to_N
@@ -127,8 +126,6 @@ class FaceLoginView(APIView):
             # 识别成功，签发 JWT
             tokens = get_tokens_for_user(user)
             
-            # 触发 Linux 硬件底层播报，消除网页感
-            play_tts_sync(f"识别成功，欢迎回来，{user.username}")
             
             return Response({
                 "code": "AUTH_SUCCESS",
@@ -276,6 +273,89 @@ class ActivityListView(APIView):
                 "quality_score": act.quality_score
             })
         return Response({"records": data}, status=status.HTTP_200_OK)
+    
+class ActivityDetailView(APIView):
+    """
+    查询单次训练的详细记录 (包含 AI 报告与高频心率血氧数据)
+    """
+    def get(self, request, pk):
+        user = request.user if request.user.is_authenticated else None
+        
+        try:
+            # 安全控制：只能查询当前用户的记录，或者未登录时放开（联调期）
+            if user:
+                activity = Activity.objects.get(pk=pk, user=user)
+            else:
+                activity = Activity.objects.get(pk=pk)
+        except Activity.DoesNotExist:
+            return Response({"error": "未找到该条训练记录，或无权访问"}, status=status.HTTP_404_NOT_FOUND)
+            
+        # 1. 提取基础宏观数据
+        data = {
+            "id": activity.id,
+            "activity_type": activity.get_activity_type_display(),
+            "training_mode": activity.get_training_mode_display(),
+            "start_time": activity.start_time.strftime('%Y-%m-%d %H:%M:%S'),
+            "duration_seconds": activity.duration,
+            "total_reps": activity.total_reps,
+            "intensity": activity.get_intensity_display(),
+            "perceived_exertion": activity.perceived_exertion,
+            "quality_score": activity.quality_score,
+        }
+        
+        # 2. 提取跨表的 AI 深度复盘报告 (如果有)
+        if hasattr(activity, 'ai_feedback'):
+            data['ai_report'] = {
+                "feedback": activity.ai_feedback.feedback_text,
+                "suggestion": activity.ai_feedback.next_step_suggestion
+            }
+            
+        # 3. 核心补充：提取关联的所有心率血氧时序数据
+        # 使用 related_name 'time_series' 进行反向查询，并按时间偏移量升序排列
+        time_series_qs = activity.time_series.all().order_by('timestamp_offset')
+        data['sensor_data_series'] = [
+            {
+                "offset": ts.timestamp_offset,
+                "phase": ts.get_phase_display(), # 转为中文如“组间休息”
+                "heart_rate": ts.heart_rate,
+                "spo2": ts.spo2,
+                "current_rep": ts.current_rep_count
+            } for ts in time_series_qs
+        ]
+        
+        return Response(data, status=status.HTTP_200_OK)
+    
+
+
+class ActivityStatusView(APIView):
+    """
+    查询指定 Activity 的后台 AI 分析是否完成 (GET)
+    """
+    def get(self, request, pk):
+        try:
+            # 安全起见，加上 user 过滤防止越权查询
+            if request.user.is_authenticated:
+                activity = Activity.objects.get(pk=pk, user=request.user)
+            else:
+                activity = Activity.objects.get(pk=pk)
+        except Activity.DoesNotExist:
+            return Response({"error": "未找到该训练记录"}, status=status.HTTP_404_NOT_FOUND)
+
+        # 核心判断逻辑：检查当前 activity 是否已经绑定了 ai_feedback
+        # (因为大模型跑完后，会执行 AIFeedback.objects.create(activity_id=act_id...))
+        if hasattr(activity, 'ai_feedback'):
+            return Response({
+                "status": "COMPLETED",
+                "msg": "AI 分析已完成",
+                "quality_score": activity.quality_score,
+                # 可以选择把简短的提示传给前端
+                "feedback_preview": activity.ai_feedback.feedback_text[:20] + "..." 
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({
+                "status": "PROCESSING",
+                "msg": "AI 后台正在疯狂运算中..."
+            }, status=status.HTTP_200_OK)
 
 
 class TrainingPlanView(APIView):
@@ -360,7 +440,7 @@ class TrainingLoadView(APIView):
 ##########################################################################
 
 class DashboardView(APIView):
-    """主页聚合接口 (GET) - 一次性拉取用户核心数据"""
+    """主页聚合接口 (GET) - 一次性拉取用户核心数据及今日任务进度"""
     def get(self, request):
         user = request.user
         if not user.is_authenticated:
@@ -369,15 +449,80 @@ class DashboardView(APIView):
         # 1. 基础档案
         profile = user.profile
         
-        # 2. 今日计划
-        active_plan = TrainingPlan.objects.filter(user=user, is_active=True).first()
-        
-        # 3. 近期负荷 (简单示例)
+        # 2. 获取近期负荷
         recent_acts = Activity.objects.filter(user=user, start_time__gte=timezone.now()-timedelta(days=7))
         weekly_duration = sum(act.duration for act in recent_acts)
         
-        # 入场语音欢迎（硬件直接发声）
-        play_tts_sync(f"欢迎回来 {user.username}，今天有新的训练计划等你完成。")
+        # ==========================================
+        # 3. [新增] 核心逻辑：今日计划完成度计算
+        # ==========================================
+        active_plan = TrainingPlan.objects.filter(user=user, is_active=True).first()
+        today_completed = False
+        progress_percent = 0
+        today_exercises = []
+
+        if active_plan:
+            # 3.1 计算今天是计划的第几天 (假设 7 天一个循环)
+            now_date = timezone.now().date()
+            plan_start_date = active_plan.created_at.date()
+            days_diff = (now_date - plan_start_date).days
+            current_day_num = (days_diff % 7) + 1 # 结果为 1-7
+            
+            # 3.2 从 JSON 中找出今天的计划
+            plan_json = active_plan.plan_content
+            today_plan = next((day for day in plan_json if day.get('day') == current_day_num), None)
+            
+            if today_plan and today_plan.get('exercises'):
+                target_exercises = today_plan['exercises']
+                total_target_reps = 0
+                total_actual_reps = 0
+                is_all_done = True
+                
+                # 获取今天所有的真实运动记录
+                today_activities = Activity.objects.filter(
+                    user=user,
+                    start_time__date=now_date
+                )
+                
+                # 3.3 遍历今日目标，与数据库记录进行碰撞比对
+                for ex in target_exercises:
+                    if ex.get('type') == 'rest':
+                        today_completed = True
+                        progress_percent = 100
+                        continue
+                        
+                    # 计算目标次数: 组数 * 每组次数
+                    ex_target = ex.get('sets', 0) * ex.get('reps_per_set', 0)
+                    total_target_reps += ex_target
+                    
+                    # 聚合今天这个特定动作实际做了多少次
+                    ex_actual_agg = today_activities.filter(activity_type=ex['type']).aggregate(total=Sum('total_reps'))
+                    ex_actual = ex_actual_agg['total'] or 0
+                    
+                    # 为了防止超额完成导致进度条爆表超过 100%，做个封顶限制
+                    total_actual_reps += min(ex_actual, ex_target)
+                    
+                    if ex_actual < ex_target:
+                        is_all_done = False
+                        
+                    # 组装给前端展示的详情列表
+                    today_exercises.append({
+                        "type": ex['type'],
+                        "target": ex_target,
+                        "actual": ex_actual,
+                        "is_done": ex_actual >= ex_target
+                    })
+                
+                # 3.4 最终结算百分比
+                today_completed = is_all_done
+                if total_target_reps > 0:
+                    progress_percent = round((total_actual_reps / total_target_reps) * 100)
+
+        # 4. 入场语音欢迎（硬件直接发声）
+        if today_completed:
+            play_tts_sync(f"欢迎回来 {user.username}，您今天已经完成了今天所有训练任务！")
+        else:
+            play_tts_sync(f"欢迎回来 {user.username}，今天还有进度未完成，继续努力。")
 
         return Response({
             "user_info": {
@@ -387,9 +532,13 @@ class DashboardView(APIView):
                 "weight": profile.weight
             },
             "weekly_duration_mins": round(weekly_duration / 60, 1),
-            "active_plan_id": active_plan.id if active_plan else None
+            "plan_status": {
+                "active_plan_id": active_plan.id if active_plan else None,
+                "is_completed": today_completed,
+                "progress_percent": progress_percent,
+                "today_exercises": today_exercises # 供前端渲染列表：深蹲 (45/60次) 
+            }
         })
-
 class MicroCoachView(APIView):
     """组间话疗微指导 (POST)"""
     def post(self, request):
@@ -483,7 +632,7 @@ class TrainFinishView(APIView):
                             is_active=True,
                             plan_type='LLM_GENERATED'
                         )
-                        
+
             except Exception as e:
                 # 捕获异步线程中的异常，防止静默崩溃
                 logger.error(f"后台大模型分析任务执行失败: {str(e)}")
@@ -495,7 +644,7 @@ class TrainFinishView(APIView):
         thread = threading.Thread(target=background_llm_task, args=(activity.id, user.id, data))
         thread.start()
 
-        play_tts_sync("训练辛苦了！数据已经保存，AI正在为您生成分析报告，请稍候。")
+        play_tts_sync("数据已经保存，AI正在为您生成分析报告，请稍候。")
         return Response({"msg": "数据已保存，AI后台分析中", "activity_id": activity.id}, status=status.HTTP_202_ACCEPTED)
 
 class ChatbotView(APIView):
@@ -588,3 +737,56 @@ class ChatbotView(APIView):
                 "injected_intensity": weekly_intensity
             }
         }, status=status.HTTP_200_OK)
+    
+class ExerciseDictionaryView(APIView):
+    """
+    查询系统当前支持的所有具体运动动作库 (GET)
+    专为前端“自由训练”模式提供动作选单
+    """
+    def get(self, request):
+        # 从 Activity 模型的配置中直接动态读取，保证单点维护 (Single Source of Truth)
+        # 如果你以后在 models.py 里加了新的动作，这里会自动生效，前端也会自动多出一个选项
+        from pages.models import Activity 
+        
+        exercises = []
+        for code, name in Activity.ACTIVITY_TYPES:
+            # 过滤掉 'mixed_plan' 等非单项动作的宏观标记
+            if code not in ['mixed_plan']:
+                exercises.append({
+                    "code": code,
+                    "name": name
+                })
+                
+        return Response({
+            "total": len(exercises),
+            "exercises": exercises
+        }, status=status.HTTP_200_OK)
+    
+class TTSPlayView(APIView):
+    """
+    系统底层 TTS 语音播报接口 (POST)
+    未来作为“哑终端”服务：前端/App发送任意文本，后端主板无脑发声
+    """
+    # 如果希望这个接口完全开放供局域网设备调用，可以设为 AllowAny
+    # permission_classes = [AllowAny] 
+    
+    def post(self, request):
+        text = request.data.get('text', '').strip()
+        # 允许前端自定义音色，默认使用阳光男声
+        voice = request.data.get('voice', 'zh-CN-YunyangNeural') 
+        
+        if not text:
+            return Response({"error": "播放文本不能为空"}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            # 调度系统底层扬声器 (非阻塞)
+            play_tts_sync(text, voice=voice)
+            
+            return Response({
+                "msg": "系统扬声器已触发播报", 
+                "played_text": text,
+                "voice": voice
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({"error": f"硬件扬声器调用失败: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

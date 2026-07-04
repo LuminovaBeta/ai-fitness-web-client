@@ -3,34 +3,59 @@
 import cv2
 import numpy as np
 import base64
+import os
+from django.conf import settings
 from django.contrib.auth.models import User
 from pages.models import UserFaceEmbedding
 
-# =====================================================================
-# 边缘端模型加载桩（RK3588 环境下可替换为 rknn-toolkit2 或 onnxruntime 推理）
-# =====================================================================
+# 引入 insightface (需 pip install insightface onnxruntime)
+import insightface
+from insightface.app.common import Face
+
 class InsightFaceEngine:
     """
-    假定此处集成了 det_2.5g (RetinaFace) 和 w600k_r50 (ArcFace) 
-    标准 InsightFace Python 库或板载 ONNXRuntime 的封装
+    本地 CPU 测试版 InsightFace 引擎
     """
     def __init__(self):
-        # 初始化模型配置，实际生产环境中在此处加载 model_file
-        pass
+        # 1. 显式定位项目根目录 models 文件夹下的模型文件
+        det_path = os.path.join(settings.BASE_DIR, 'models', 'det_2.5g.onnx')
+        rec_path = os.path.join(settings.BASE_DIR, 'models', 'w600k_r50.onnx')
+        
+        if not os.path.exists(det_path) or not os.path.exists(rec_path):
+            print(f"警告：未找到模型文件，请确保模型存放在 {os.path.join(settings.BASE_DIR, 'models')} 下！")
+
+        # 2. 初始化检测模型 (det_2.5g)
+        self.det_model = insightface.model_zoo.get_model(det_path, providers=['CPUExecutionProvider'])
+        self.det_model.prepare(ctx_id=0, input_size=(640, 640))
+        
+        # 3. 初始化特征提取模型 (w600k_r50)
+        self.rec_model = insightface.model_zoo.get_model(rec_path, providers=['CPUExecutionProvider'])
+        
+        print("✅ 本地 ONNX 人脸引擎初始化成功！")
 
     def detect_and_extract(self, img_np):
-        """
-        输入: NumPy 图像矩阵
-        输出: 检出的人脸列表，每个脸包含:
-              - 'bbox': [x1, y1, x2, y2]
-              - 'kps': 5个关键点坐标 [[x,y], ...]
-              - 'embedding': 512维向量 (np.array)
-              - 'pose': [pitch, yaw, roll] 姿态角（部分引擎直接输出，若无可用关键点代算）
-        """
-        # 实际业务代码请替换为您的本地模型前向传播:
-        # faces = self.app.get(img_np)
-        # 此处写伪代码/桩代码以供逻辑跑通
-        return [] 
+        # 执行检测
+        bboxes, kpss = self.det_model.detect(img_np, max_num=0, metric='default')
+        if bboxes is None or bboxes.shape[0] == 0:
+            return []
+            
+        results = []
+        # 执行特征提取
+        for i in range(bboxes.shape[0]):
+            bbox = bboxes[i, 0:4]
+            det_score = bboxes[i, 4]
+            kps = kpss[i]
+            
+            face = Face(bbox=bbox, kps=kps, det_score=det_score)
+            self.rec_model.get(img_np, face) # 生成 embedding 挂载到 face 对象上
+            
+            results.append({
+                'bbox': face.bbox.tolist(),
+                'kps': face.kps.tolist(),
+                'embedding': face.embedding.tolist(),
+                # 因为底层没算 pose，这里不返回 pose。你写的防误判代码会自动降级使用 kps 算偏角
+            })
+        return results
 
 # 初始化全局单例引擎
 face_engine = InsightFaceEngine()
