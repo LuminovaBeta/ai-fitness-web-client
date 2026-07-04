@@ -1,9 +1,12 @@
 from django.shortcuts import render
 # Create your views here.
+from django.db.models import Sum 
+
 import base64
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -13,7 +16,7 @@ import threading
 from datetime import timedelta
 from pages.models import Activity, ActivityTimeSeries, AIFeedback, TrainingPlan
 from services.tts_service import play_tts_sync
-from services.llm_service import generate_micro_coaching, generate_post_workout_feedback
+from services.llm_service import generate_micro_coaching, generate_post_workout_feedback, load_yaml, call_local_llm
 from services.face_service import process_face_pipeline, verify_face_1_to_N
 
 # 登录相关逻辑 ###########################################
@@ -27,7 +30,9 @@ def get_tokens_for_user(user):
     }
 
 class RegisterView(APIView):
-    """3. 注册接口 (POST)"""
+    """1. 基础注册接口 (POST) - 仅负责账号与身体档案初始化"""
+    permission_classes = [AllowAny] # 注册接口无需鉴权
+
     def post(self, request):
         data = request.data
         username = data.get('username')
@@ -42,21 +47,27 @@ class RegisterView(APIView):
         # 1. 创建 Django 核心用户
         user = User.objects.create_user(username=username, password=password)
         
-        # 2. 初始化你队友设计的身体档案表 (UserProfile)
+        # 2. 初始化身体档案表 (UserProfile)
+        # 目标(goal)如果 UserProfile 表里有字段，也可以存在这里，方便以后复用
+        gender = data.get('gender', 'O')
+        height = data.get('height', 170)
+        weight = data.get('weight', 65)
+        
         UserProfile.objects.create(
             user=user,
-            gender=data.get('gender', 'O'),
-            height=data.get('height'),
-            weight=data.get('weight')
+            gender=gender,
+            height=height,
+            weight=weight
         )
         
-        # 3. 注册成功后直接签发 Token，免去用户二次登录
-        tokens = get_tokens_for_user(user)
+        # 3. 签发 Token 并快速返回
+        tokens = get_tokens_for_user(user) # 假设你 utils 里有这个函数
         return Response({
-            "msg": "注册成功",
+            "msg": "注册成功，账号档案已建立",
             "username": user.username,
             **tokens
         }, status=status.HTTP_201_CREATED)
+    
 
 
 class LoginView(APIView):
@@ -164,6 +175,71 @@ class FaceEnrollView(APIView):
 # 登录相关逻辑end ###########################################
 
 # 用户训练相关逻辑 #############################################
+
+class GenerateInitialPlanView(APIView):
+    """2. 初始化计划生成接口 (POST) - 供前端在注册后携带 Token 自动调用"""
+    permission_classes = [IsAuthenticated] # 必须带上注册时下发的 Token 才能调用
+
+    def post(self, request):
+        user = request.user
+        data = request.data
+        # 前端将用户的目标诉求传过来
+        user_goal = data.get('goal', '减脂塑形') 
+
+        # 从刚刚建好的 UserProfile 中提取生理数据
+        try:
+            profile = user.userprofile # 依赖 models.py 中 OneToOneField 的 related_name，默认是小写
+            gender = profile.gender
+            height = profile.height
+            weight = profile.weight
+        except Exception:
+            gender, height, weight = 'O', 170, 65 # 异常兜底
+
+        try:
+            # 1. 调度本地 LLM 运算
+            config = load_yaml()
+            prompt_template = config['prompts']['onboarding']
+            prompt = prompt_template.format(
+                gender=gender, 
+                height=height, 
+                weight=weight, 
+                user_goal_text=user_goal
+            )
+            llm_reply = call_local_llm(prompt, max_tokens=300, temperature=0.2)
+            
+            # 2. 清理 Markdown 并解析 JSON
+            clean_text = llm_reply.replace("```json", "").replace("```", "").strip()
+            plan_json = json.loads(clean_text)
+
+            # 3. 计划落盘
+            plan = TrainingPlan.objects.create(
+                user=user,
+                plan_content=plan_json,
+                is_active=True,
+                plan_type='LLM_GENERATED'
+            )
+            
+            return Response({
+                "msg": "AI 专属训练计划生成成功",
+                "plan_id": plan.id,
+                "plan_content": plan_json
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            # 容灾降级机制：如果 LLM 超时或解析失败，给一个默认计划，防止前端无数据可用
+            default_plan = [{"day": 1, "exercises": [{"type": "squat", "sets": 3, "reps_per_set": 15, "rest_sec": 60}]}]
+            plan = TrainingPlan.objects.create(
+                user=user,
+                plan_content=default_plan,
+                is_active=True,
+                plan_type='LLM_GENERATED'
+            )
+            return Response({
+                "msg": "当前 AI 算力拥挤，已为您匹配基础兜底计划",
+                "plan_id": plan.id,
+                "plan_content": default_plan
+            }, status=status.HTTP_201_CREATED)
+
 class ActivityListView(APIView):
     """
     对应规划：查询训练记录 (GET)
@@ -320,12 +396,12 @@ class MicroCoachView(APIView):
         return Response({"spoken_text": coach_words}, status=status.HTTP_200_OK)
 
 class TrainFinishView(APIView):
-    """训练核心中枢结算接口 (POST) - 异步落地与大模型分析"""
+    """训练核心中枢结算接口 (POST)"""
     def post(self, request):
         user = request.user
         data = request.data
         
-        # 1. 立即落盘宏观主表 Activity
+        # 1. 立即落盘宏观主表 Activity (原有逻辑保持不变)
         activity = Activity.objects.create(
             user=user,
             training_mode=data.get('training_mode', 'FREE'),
@@ -336,7 +412,7 @@ class TrainFinishView(APIView):
             perceived_exertion=data.get('perceived_exertion', 3)
         )
         
-        # 2. 批量落盘高频静息时序数据 ActivityTimeSeries
+        # 2. 批量落盘高频静息时序数据 (原有逻辑保持不变)
         time_series_data = data.get('time_series', [])
         ts_objects = [
             ActivityTimeSeries(
@@ -351,28 +427,43 @@ class TrainFinishView(APIView):
         if ts_objects:
             ActivityTimeSeries.objects.bulk_create(ts_objects)
 
-        # 3. 开启后台异步线程，执行大模型评估 (防止阻塞 Kiosk 前端画面流转)
+        # 3. 核心补充：异步线程重构
         def background_llm_task(act_id, user_id, raw_data):
-            # 聚合数据给大模型
+            # 3.1 动态从数据库计算真实的客观体征均值，替代 Hardcode
+            ts_qs = ActivityTimeSeries.objects.filter(activity_id=act_id, phase='REST')
+            agg_res = ts_qs.aggregate(
+                avg_hr=Avg('heart_rate'),
+                min_spo2=Min('spo2')
+            )
+            # 若缺失硬件流数据，则设置合理的降级默认值
+            avg_rest_hr = round(agg_res['avg_hr'] or 90) 
+            min_spo2 = round(agg_res['min_spo2'] or 98)
+
+            # 3.2 聚合真实负载数据给大模型
             llm_payload = {
-                "target_reps": 30, # 演示写死，实际需从前端传
+                "target_reps": raw_data.get('target_reps', raw_data.get('total_reps', 0)), 
                 "actual_reps": raw_data.get('total_reps', 0),
-                "avg_rest_hr": 110, # 实际应从 ts_objects 中计算平均值
-                "min_spo2": 95,     # 实际应从 ts_objects 中计算
+                "error_count": raw_data.get('error_count', 0), # 需前端提交动作变形次数
+                "avg_rest_hr": avg_rest_hr,
+                "min_spo2": min_spo2,     
                 "rpe_score": raw_data.get('perceived_exertion', 3)
             }
             
-            # 生成反馈与新计划
+            # 3.3 生成反馈与新计划
             result_json = generate_post_workout_feedback(llm_payload)
             if result_json:
-                # 落盘评语
+                # 核心修复点：将大模型打出的评分更新回主表
+                new_score = result_json.get('quality_score', 5)
+                Activity.objects.filter(id=act_id).update(quality_score=new_score)
+                
+                # 落盘详细评语
                 AIFeedback.objects.create(
                     activity_id=act_id,
-                    feedback_text=result_json.get('feedback_text', ''),
-                    next_step_suggestion="系统自动生成",
+                    feedback_text=result_json.get('feedback_text', '干得很棒！'),
+                    next_step_suggestion="系统基于最新运动表现自动调优",
                 )
                 
-                # 如果有新计划，则覆写
+                # 计划自动进化：覆写新的 JSON
                 new_plan = result_json.get('new_plan')
                 if new_plan:
                     TrainingPlan.objects.filter(user_id=user_id, is_active=True).update(is_active=False)
@@ -386,10 +477,7 @@ class TrainFinishView(APIView):
         thread = threading.Thread(target=background_llm_task, args=(activity.id, user.id, data))
         thread.start()
 
-        # 训练结束播报
         play_tts_sync("训练辛苦了！数据已经保存，AI正在为您生成分析报告，请稍候。")
-
-        # 4. 响应分离，立即返回 HTTP 202 Accepted
         return Response({"msg": "数据已保存，AI后台分析中", "activity_id": activity.id}, status=status.HTTP_202_ACCEPTED)
 
 class ChatbotView(APIView):
