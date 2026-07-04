@@ -1,7 +1,10 @@
 from django.shortcuts import render
 # Create your views here.
-from django.db.models import Sum 
-
+from django.db.models import Sum, Avg, Min
+from django.db import connection
+import logging
+import re
+import json
 import base64
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -18,6 +21,8 @@ from pages.models import Activity, ActivityTimeSeries, AIFeedback, TrainingPlan
 from services.tts_service import play_tts_sync
 from services.llm_service import generate_micro_coaching, generate_post_workout_feedback, load_yaml, call_local_llm
 from services.face_service import process_face_pipeline, verify_face_1_to_N
+
+logger = logging.getLogger(__name__)
 
 # 登录相关逻辑 ###########################################
 
@@ -188,7 +193,7 @@ class GenerateInitialPlanView(APIView):
 
         # 从刚刚建好的 UserProfile 中提取生理数据
         try:
-            profile = user.userprofile # 依赖 models.py 中 OneToOneField 的 related_name，默认是小写
+            profile = user.profile # 依赖 models.py 中 OneToOneField 的 related_name，默认是小写
             gender = profile.gender
             height = profile.height
             weight = profile.weight
@@ -206,12 +211,16 @@ class GenerateInitialPlanView(APIView):
                 user_goal_text=user_goal
             )
             llm_reply = call_local_llm(prompt, max_tokens=300, temperature=0.2)
+            # 使用正则贪婪匹配提取第一个 { 或 [ 到最后一个 } 或 ] 之间的内容
+            match = re.search(r'(\{.*\}|\[.*\])', llm_reply, re.DOTALL)
             
-            # 2. 清理 Markdown 并解析 JSON
-            clean_text = llm_reply.replace("```json", "").replace("```", "").strip()
+            if not match:
+                raise ValueError("大模型返回的内容中未找到有效的 JSON 结构")
+                
+            clean_text = match.group(0)
             plan_json = json.loads(clean_text)
 
-            # 3. 计划落盘
+            # 3. 计划落盘 (保持不变)
             plan = TrainingPlan.objects.create(
                 user=user,
                 plan_content=plan_json,
@@ -429,50 +438,59 @@ class TrainFinishView(APIView):
 
         # 3. 核心补充：异步线程重构
         def background_llm_task(act_id, user_id, raw_data):
-            # 3.1 动态从数据库计算真实的客观体征均值，替代 Hardcode
-            ts_qs = ActivityTimeSeries.objects.filter(activity_id=act_id, phase='REST')
-            agg_res = ts_qs.aggregate(
-                avg_hr=Avg('heart_rate'),
-                min_spo2=Min('spo2')
-            )
-            # 若缺失硬件流数据，则设置合理的降级默认值
-            avg_rest_hr = round(agg_res['avg_hr'] or 90) 
-            min_spo2 = round(agg_res['min_spo2'] or 98)
-
-            # 3.2 聚合真实负载数据给大模型
-            llm_payload = {
-                "target_reps": raw_data.get('target_reps', raw_data.get('total_reps', 0)), 
-                "actual_reps": raw_data.get('total_reps', 0),
-                "error_count": raw_data.get('error_count', 0), # 需前端提交动作变形次数
-                "avg_rest_hr": avg_rest_hr,
-                "min_spo2": min_spo2,     
-                "rpe_score": raw_data.get('perceived_exertion', 3)
-            }
-            
-            # 3.3 生成反馈与新计划
-            result_json = generate_post_workout_feedback(llm_payload)
-            if result_json:
-                # 核心修复点：将大模型打出的评分更新回主表
-                new_score = result_json.get('quality_score', 5)
-                Activity.objects.filter(id=act_id).update(quality_score=new_score)
-                
-                # 落盘详细评语
-                AIFeedback.objects.create(
-                    activity_id=act_id,
-                    feedback_text=result_json.get('feedback_text', '干得很棒！'),
-                    next_step_suggestion="系统基于最新运动表现自动调优",
+            try:
+                # 3.1 动态从数据库计算真实的客观体征均值，替代 Hardcode
+                ts_qs = ActivityTimeSeries.objects.filter(activity_id=act_id, phase='REST')
+                agg_res = ts_qs.aggregate(
+                    avg_hr=Avg('heart_rate'),
+                    min_spo2=Min('spo2')
                 )
+                # 若缺失硬件流数据，则设置合理的降级默认值
+                avg_rest_hr = round(agg_res['avg_hr'] or 90) 
+                min_spo2 = round(agg_res['min_spo2'] or 98)
+
+                # 3.2 聚合真实负载数据给大模型
+                llm_payload = {
+                    "target_reps": raw_data.get('target_reps', raw_data.get('total_reps', 0)), 
+                    "actual_reps": raw_data.get('total_reps', 0),
+                    "error_count": raw_data.get('error_count', 0), # 需前端提交动作变形次数
+                    "avg_rest_hr": avg_rest_hr,
+                    "min_spo2": min_spo2,     
+                    "rpe_score": raw_data.get('perceived_exertion', 3)
+                }
                 
-                # 计划自动进化：覆写新的 JSON
-                new_plan = result_json.get('new_plan')
-                if new_plan:
-                    TrainingPlan.objects.filter(user_id=user_id, is_active=True).update(is_active=False)
-                    TrainingPlan.objects.create(
-                        user_id=user_id,
-                        plan_content=new_plan,
-                        is_active=True,
-                        plan_type='LLM_GENERATED'
+                # 3.3 生成反馈与新计划
+                result_json = generate_post_workout_feedback(llm_payload)
+                if result_json:
+                    # 核心修复点：将大模型打出的评分更新回主表
+                    new_score = result_json.get('quality_score', 5)
+                    Activity.objects.filter(id=act_id).update(quality_score=new_score)
+                    
+                    # 落盘详细评语
+                    AIFeedback.objects.create(
+                        activity_id=act_id,
+                        feedback_text=result_json.get('feedback_text', '干得很棒！'),
+                        next_step_suggestion="系统基于最新运动表现自动调优",
                     )
+                    
+                    # 计划自动进化：覆写新的 JSON
+                    new_plan = result_json.get('new_plan')
+                    if new_plan:
+                        TrainingPlan.objects.filter(user_id=user_id, is_active=True).update(is_active=False)
+                        TrainingPlan.objects.create(
+                            user_id=user_id,
+                            plan_content=new_plan,
+                            is_active=True,
+                            plan_type='LLM_GENERATED'
+                        )
+                        
+            except Exception as e:
+                # 捕获异步线程中的异常，防止静默崩溃
+                logger.error(f"后台大模型分析任务执行失败: {str(e)}")
+                
+            finally: # <--- [改进点] 添加 finally 块释放连接
+                # 确保无论正常执行完毕还是中途报错，当前线程的数据库连接都会被强制关闭回收
+                connection.close()
 
         thread = threading.Thread(target=background_llm_task, args=(activity.id, user.id, data))
         thread.start()
