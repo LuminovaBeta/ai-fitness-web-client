@@ -16,8 +16,8 @@ profiles:
     reconnect_delay_ms: 3000
 
   rk3588:
-    rosbridge_url: "ws://192.168.123.104:9090"
-    mjpeg_stream_url: "http://192.168.123.103:8080/stream?topic=/pose/image&type=mjpeg"
+    rosbridge_url: "ws://127.0.0.1:9090"
+    mjpeg_stream_url: "http://127.0.0.1:8080/stream?topic=/pose/image&type=mjpeg"
     reconnect_delay_ms: 3000
 
 # 统一 topic 映射，前后端都应从这里读取
