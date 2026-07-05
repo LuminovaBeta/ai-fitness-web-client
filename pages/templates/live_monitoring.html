@@ -20,13 +20,13 @@
             <div class="video-wrapper" :class="{ 'is-fullscreen': isFullscreen }">
                 
                 <div class="ai-overlay" v-if="!isFullscreen">
-                    <div class="ros-topic">▶ topic: /pose/image | Websocket: [[ isConnected ? '已连接' : '断开' ]]</div>
+                    <div class="ros-topic">▶ topic: [[ topicPoseImage ]] | Websocket: [[ isConnected ? '已连接' : '断开' ]]</div>
                     <div class="ai-status">实时指导：[[ currentPhase ]]</div>
                 </div>
 
                 <img id="ai-video-feed" 
                     class="skeleton-placeholder" 
-                    src="http://192.168.123.103:8080/stream?topic=/pose/image&type=mjpeg"
+                    src=""
                     alt="ROS D455 Stream">            
 
                 <!-- 🔥 HUD OSD 全屏叠加层 -->
@@ -212,9 +212,19 @@
 
 <!-- vue 逻辑 -->
 {% block vue_logic %}
+{{ ros_runtime|json_script:"ros-runtime-json" }}
 <script>
+    window.ROS_RUNTIME = JSON.parse(document.getElementById('ros-runtime-json').textContent || '{}');
+
     window.PAGE_MIXINS.push({
         data() {
+            const rosRuntime = window.ROS_RUNTIME || {};
+            const profile = rosRuntime.active_profile || {};
+            const topics = rosRuntime.topics || {};
+            const squat = topics.squat || {};
+            const heart = topics.heart || {};
+            const llm = topics.llm || {};
+
             return {
                 ros: null,
                 isConnected: false,
@@ -232,11 +242,28 @@
                 timerId: null,             
                 
                 // 🌟 新增：大模型文字接收
-                aiSuggestion: '正在等待 NPU 底层大模型节点推送实时建议...'
+                aiSuggestion: '正在等待 NPU 底层大模型节点推送实时建议...',
+
+                rosRuntimeMode: rosRuntime.runtime_mode || 'windows_debug',
+                rosDebugMode: !!rosRuntime.debug_mode,
+                rosbridgeUrl: profile.rosbridge_url || 'ws://127.0.0.1:9090',
+                videoStreamUrl: profile.mjpeg_stream_url || 'http://127.0.0.1:8080/stream?topic=/pose/image&type=mjpeg',
+                reconnectDelayMs: profile.reconnect_delay_ms || 3000,
+
+                topicControl: squat.control || '/squat/control',
+                topicPoseImage: topics.pose_image || '/pose/image',
+                topicState: squat.state || '/squat/state',
+                topicRepCompleted: squat.rep_completed || '/squat/rep_completed',
+                topicErrors: squat.errors || '/squat/errors',
+                topicHeartRate: heart.heart_rate || '/heart_sensor_node/heart_rate',
+                topicSpo2: heart.spo2 || '/heart_sensor_node/spo2',
+                topicPacketLoss: heart.packet_loss || '/heart_sensor_node/packet_loss',
+                topicLlmOutput: llm.output_string || '/rkllm/output_string'
             }
         },
         mounted() {
             this.writeToTerminal('INFO', 'Vue 生命周期已挂载，准备连接 ROS...');
+            this.updateVideoStreamSrc();
             this.initROS();
         },
         beforeUnmount() {
@@ -244,12 +271,19 @@
             if(this.timerId) clearInterval(this.timerId); // 清除计时器释放内存
         },
         methods: {
+            updateVideoStreamSrc() {
+                const feed = document.getElementById('ai-video-feed');
+                if (feed) {
+                    feed.src = this.videoStreamUrl;
+                }
+            },
+
             initROS() {
-                this.ros = new ROSLIB.Ros({ url : 'ws://192.168.123.104:9090' });
+                this.ros = new ROSLIB.Ros({ url : this.rosbridgeUrl });
 
                 this.ros.on('connection', () => {
                     this.isConnected = true;
-                    this.writeToTerminal('SUCCESS', 'Websocket 已连接至 RK3588 NPU 引擎');
+                    this.writeToTerminal('SUCCESS', `Websocket 已连接 (${this.rosRuntimeMode})`);
                     
                     this.subscribeTopics();   
                     this.setupPublishers();   
@@ -262,27 +296,27 @@
                 this.ros.on('close', () => {
                     this.isConnected = false;
                     this.writeToTerminal('WARN', 'ROS 连接断开，尝试重连...');
-                    setTimeout(() => { this.initROS(); }, 3000);
+                    setTimeout(() => { this.initROS(); }, this.reconnectDelayMs);
                 });
             },
 
             setupPublishers() {
                 this.controlTopic = new ROSLIB.Topic({
                     ros : this.ros,
-                    name : '/squat/control',
+                    name : this.topicControl,
                     messageType : 'std_msgs/msg/Bool' 
                 });
             },
 
             // 订阅数据
             subscribeTopics() {
-                const stateTopic = new ROSLIB.Topic({ ros: this.ros, name: '/squat/state', messageType: 'std_msgs/msg/String' });
+                const stateTopic = new ROSLIB.Topic({ ros: this.ros, name: this.topicState, messageType: 'std_msgs/msg/String' });
                 stateTopic.subscribe((message) => { try { this.currentPhase = JSON.parse(message.data).msg; } catch(e){} });
 
-                const repTopic = new ROSLIB.Topic({ ros: this.ros, name: '/squat/rep_completed', messageType: 'std_msgs/msg/Int32' });
+                const repTopic = new ROSLIB.Topic({ ros: this.ros, name: this.topicRepCompleted, messageType: 'std_msgs/msg/Int32' });
                 repTopic.subscribe((message) => { this.squatCount = message.data; this.writeToTerminal('INFO', `完成一次完整动作！当前总数: ${this.squatCount}`); });
 
-                const errorTopic = new ROSLIB.Topic({ ros: this.ros, name: '/squat/errors', messageType: 'std_msgs/msg/String' });
+                const errorTopic = new ROSLIB.Topic({ ros: this.ros, name: this.topicErrors, messageType: 'std_msgs/msg/String' });
                 errorTopic.subscribe((message) => { 
                     try { 
                         const data = JSON.parse(message.data); 
@@ -293,13 +327,25 @@
                 });
 
                 // 订阅心率数据
-                const hrTopic = new ROSLIB.Topic({ ros: this.ros, name: '/heart_sensor_node/heart_rate', messageType: 'std_msgs/msg/Float32' });
+                const hrTopic = new ROSLIB.Topic({ ros: this.ros, name: this.topicHeartRate, messageType: 'std_msgs/msg/Float32' });
                 hrTopic.subscribe((message) => {
                     this.currentHeartRate = Math.round(message.data); 
                 });
 
+                const spo2Topic = new ROSLIB.Topic({ ros: this.ros, name: this.topicSpo2, messageType: 'std_msgs/msg/Float32' });
+                spo2Topic.subscribe((message) => {
+                    const spo2El = document.getElementById('spo2-value');
+                    if (spo2El) spo2El.innerText = Number(message.data).toFixed(1);
+                });
+
+                const packetLossTopic = new ROSLIB.Topic({ ros: this.ros, name: this.topicPacketLoss, messageType: 'std_msgs/msg/Float32' });
+                packetLossTopic.subscribe((message) => {
+                    const packetLossEl = document.getElementById('packet-loss');
+                    if (packetLossEl) packetLossEl.innerText = Number(message.data).toFixed(1);
+                });
+
                 // 订阅 Qwen 大模型推理结果
-                const aiTopic = new ROSLIB.Topic({ ros: this.ros, name: '/rkllm/output_string', messageType: 'std_msgs/msg/String' });
+                const aiTopic = new ROSLIB.Topic({ ros: this.ros, name: this.topicLlmOutput, messageType: 'std_msgs/msg/String' });
                 aiTopic.subscribe((message) => {
                     this.aiSuggestion = message.data; // 自动推送到界面的文本框中
                 });

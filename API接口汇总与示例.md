@@ -353,6 +353,8 @@
 - **URL**: `POST /api/train/finish/`
 - **鉴权**: 是（JWT）
 
+> 定位：**兼容型结算接口（V1）**。当前实现依赖前端/设备上报 `duration`、`total_reps`、`time_series` 等训练结果，再由后端落库并触发 AI 分析。
+
 **请求示例**
 ```json
 {
@@ -378,6 +380,15 @@
   "activity_id": 101
 }
 ```
+
+**是否仍有用？（与会话化接口关系）**
+
+- 若你的数据链路已改成“后端直接读设备/ROS”，则 `POST /api/train/session/<session_id>/finish/`（A4）更符合当前架构。
+- `POST /api/train/finish/` 仍有价值：
+  1. 兼容旧前端/旧设备（仍走前端上报）。
+  2. 作为兜底导入接口（批量补写历史训练数据）。
+  3. 在设备直连异常时，允许前端临时回传关键统计。
+- 结论：**可以保留，但建议标记为“兼容接口（计划下线）”**，新功能统一走 `session/start -> session/state -> session/finish`。
 
 ---
 
@@ -546,10 +557,35 @@ Content-Type: application/json
 - **URL**: `POST /api/train/session/<session_id>/finish/`
 - **鉴权**: 是（JWT）
 
+> 现已实现“完整结算链路”：创建 `Activity`、过滤并保存高质量 `REST/END` 时序、异步触发 AI 分析并生成反馈/计划迭代。
+
 **请求示例**
 ```json
 {
-  "reason": "user_finish"
+  "reason": "user_finish",
+  "final_reps": 76,
+  "perceived_exertion": 3,
+  "error_count": 2,
+  "time_series": [
+    {
+      "offset": 520,
+      "phase": "REST",
+      "heart_rate": 116,
+      "spo2": 98,
+      "current_rep": 64,
+      "is_stable": true,
+      "hold_secs": 8
+    },
+    {
+      "offset": 660,
+      "phase": "END",
+      "heart_rate": 108,
+      "spo2": 99,
+      "current_rep": 76,
+      "is_stable": true,
+      "hold_secs": 10
+    }
+  ]
 }
 ```
 
@@ -557,9 +593,46 @@ Content-Type: application/json
 ```json
 {
   "msg": "训练会话已结束",
-  "activity_id": 101
+  "activity_id": 101,
+  "saved_timeseries_count": 2,
+  "analysis_status": "PROCESSING"
 }
 ```
+
+**字段与过滤规则（关键）**
+
+- `time_series` 仅处理 `phase in ["REST", "END"]`。
+- 仅保存稳定样本：`is_stable=true`，且 `hold_secs`（若传）需 `>=3` 秒。
+- `WORK` 阶段样本会被忽略，不入库、不参与 AI 计算。
+- 若接口被重复调用（会话已结束），不会重复创建 `Activity`，直接返回已有 `activity_id`（幂等）。
+
+**AI 分析输入（已切换为高质量指标）**
+
+- `rest_hr_median`
+- `rest_spo2_median`
+- `end_hr`
+- `end_spo2`
+- `valid_sample_count`
+- `measurement_confidence`（`HIGH` / `MED` / `LOW`）
+- 以及负荷字段：`target_reps`、`actual_reps`、`error_count`、`rpe_score`
+
+> 推荐：在“后端读取训练数据”的新架构下，优先使用该接口作为唯一结算入口。
+
+---
+
+## 结算接口选型建议（新增）
+
+| 场景 | 推荐接口 | 说明 |
+|---|---|---|
+| 新架构：后端直连设备/ROS | `POST /api/train/session/<session_id>/finish/` | 会话态一致，便于状态机管理 |
+| 旧架构：前端上传完整训练数据 | `POST /api/train/finish/` | 兼容历史调用，快速复用 |
+| 灰度迁移期 | 两者并行（新走 A4，旧走 14） | 逐步观测并下线旧接口 |
+
+**下线建议（可选）**
+
+1. 在文档中将 `POST /api/train/finish/` 标记为 `Deprecated`。  
+2. 后端对该接口增加响应头：`X-API-Deprecated: true`。  
+3. 统计 2~4 周调用量，降到可控后再移除路由。
 
 ---
 

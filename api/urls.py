@@ -2,6 +2,8 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
+    path('runtime/ros-config/', views.ROSRuntimeConfigView.as_view(), name='api_runtime_ros_config'),
+
     # 鉴权与视觉注册相关
     path('auth/register/', views.RegisterView.as_view(), name='api_register'),
     path('auth/login/', views.LoginView.as_view(), name='api_login'),
@@ -30,5 +32,6 @@ urlpatterns = [
     path('user/profile/', views.UserProfileView.as_view(), name='api_user_profile'),
     path('train/session/start/', views.TrainingSessionStartView.as_view(), name='api_train_session_start'),
     path('train/session/<str:session_id>/state/', views.TrainingSessionStateView.as_view(), name='api_train_session_state'),
+    path('train/session/<str:session_id>/ingest/', views.TrainingSessionRealtimeIngestView.as_view(), name='api_train_session_ingest'),
     path('train/session/<str:session_id>/finish/', views.TrainingSessionFinishView.as_view(), name='api_train_session_finish'),
 ]

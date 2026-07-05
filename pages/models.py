@@ -9,6 +9,7 @@ class UserProfile(models.Model):
     gender = models.CharField(max_length=1, choices=GENDER_CHOICES, default='O', verbose_name="性别")
     phone = models.CharField(max_length=20, null=True, blank=True, verbose_name="手机号")
     avatar = models.URLField(max_length=500, null=True, blank=True, verbose_name="头像URL")
+    birthdate = models.DateField(null=True, blank=True, verbose_name="出生日期")
     height = models.FloatField(null=True, blank=True, verbose_name="身高(cm)")
     weight = models.FloatField(null=True, blank=True, verbose_name="体重(kg)")
     hr_max = models.IntegerField(default=190, verbose_name="最大心率")

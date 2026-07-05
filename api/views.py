@@ -12,17 +12,37 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
+from django.conf import settings
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.utils import timezone
 import threading
 from datetime import timedelta
 from uuid import uuid4
+from statistics import median
 from pages.models import Activity, ActivityTimeSeries, AIFeedback, TrainingPlan, UserProfile, UserFaceEmbedding, TrainingSession
 from services.tts_service import play_tts_sync
 from services.llm_service import generate_micro_coaching, generate_post_workout_feedback, load_yaml, call_local_llm
 from services.face_service import process_face_pipeline, verify_face_1_to_N
+from .realtime_store import upsert_session_realtime, get_session_realtime, pop_session_realtime
 
 logger = logging.getLogger(__name__)
+
+
+class ROSRuntimeConfigView(APIView):
+    """ROS 运行时配置查询（用于前端按模式读取连接参数）"""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        ros_cfg = settings.ROS_RUNTIME_CONFIG
+        return Response({
+            "runtime_mode": ros_cfg.get("runtime_mode", "windows_debug"),
+            "debug_mode": bool(ros_cfg.get("debug_mode", False)),
+            "active_profile": ros_cfg.get("active_profile", {}),
+            "session_realtime": ros_cfg.get("session_realtime", {}),
+            "topics": ros_cfg.get("topics", {}),
+            "action_detectors": ros_cfg.get("enabled_action_detectors", []),
+            "exercise_dictionary": ros_cfg.get("exercise_dictionary", []),
+        }, status=status.HTTP_200_OK)
 
 # 登录相关逻辑 ###########################################
 
@@ -33,6 +53,28 @@ def get_tokens_for_user(user):
         'refresh': str(refresh),
         'access': str(refresh.access_token),
     }
+
+
+def _is_valid_plan_content(plan_content):
+    """校验训练计划结构是否为 [{day, exercises:[{type,...}]}]。"""
+    if not isinstance(plan_content, list):
+        return False
+
+    for day_item in plan_content:
+        if not isinstance(day_item, dict):
+            return False
+        if 'day' not in day_item or 'exercises' not in day_item:
+            return False
+        if not isinstance(day_item.get('exercises'), list):
+            return False
+
+        for ex in day_item.get('exercises', []):
+            if not isinstance(ex, dict):
+                return False
+            if not ex.get('type'):
+                return False
+
+    return True
 
 class RegisterView(APIView):
     """1. 基础注册接口 (POST) - 仅负责账号与身体档案初始化"""
@@ -57,12 +99,22 @@ class RegisterView(APIView):
         gender = data.get('gender', 'O')
         height = data.get('height', 170)
         weight = data.get('weight', 65)
+        birthdate_raw = data.get('birthdate')
+        birthdate_val = None
+        if birthdate_raw:
+            try:
+                # 支持 YYYY-MM-DD 格式
+                from datetime import datetime
+                birthdate_val = datetime.strptime(birthdate_raw, '%Y-%m-%d').date()
+            except Exception:
+                birthdate_val = None
         
         UserProfile.objects.create(
             user=user,
             gender=gender,
             height=height,
-            weight=weight
+            weight=weight,
+            birthdate=birthdate_val
         )
         
         # 3. 签发 Token 并快速返回
@@ -216,8 +268,11 @@ class GenerateInitialPlanView(APIView):
                 
             clean_text = match.group(0)
             plan_json = json.loads(clean_text)
+            if not _is_valid_plan_content(plan_json):
+                raise ValueError("训练计划结构非法")
 
             # 3. 计划落盘 (保持不变)
+            TrainingPlan.objects.filter(user=user, is_active=True).update(is_active=False)
             plan = TrainingPlan.objects.create(
                 user=user,
                 plan_content=plan_json,
@@ -233,7 +288,9 @@ class GenerateInitialPlanView(APIView):
 
         except Exception as e:
             # 容灾降级机制：如果 LLM 超时或解析失败，给一个默认计划，防止前端无数据可用
+            logger.warning(f"初始化训练计划生成失败，触发兜底计划: user_id={user.id}, err={str(e)}")
             default_plan = [{"day": 1, "exercises": [{"type": "squat", "sets": 3, "reps_per_set": 15, "rest_sec": 60}]}]
+            TrainingPlan.objects.filter(user=user, is_active=True).update(is_active=False)
             plan = TrainingPlan.objects.create(
                 user=user,
                 plan_content=default_plan,
@@ -361,7 +418,12 @@ class TrainingPlanView(APIView):
     def get(self, request):
         """获取当前正在执行的激活计划"""
         user = request.user
-        plan = TrainingPlan.objects.filter(user=user, is_active=True).first()
+        active_plans = TrainingPlan.objects.filter(user=user, is_active=True).order_by('-created_at')
+        plan = active_plans.first()
+
+        # 自愈：若出现多个 active，保留最新一条
+        if plan and active_plans.count() > 1:
+            TrainingPlan.objects.filter(user=user, is_active=True).exclude(id=plan.id).update(is_active=False)
         
         if not plan:
             return Response({"msg": "暂无活动中的训练计划，请先生成"}, status=status.HTTP_404_NOT_FOUND)
@@ -379,6 +441,8 @@ class TrainingPlanView(APIView):
         
         if not new_plan_content:
             return Response({"error": "计划内容不能为空"}, status=status.HTTP_400_BAD_REQUEST)
+        if not _is_valid_plan_content(new_plan_content):
+            return Response({"error": "计划结构非法，请传入 [{day, exercises:[{type,...}]}]"}, status=status.HTTP_400_BAD_REQUEST)
             
         # 将该用户之前的所有计划设为失效
         TrainingPlan.objects.filter(user=user, is_active=True).update(is_active=False)
@@ -443,7 +507,9 @@ class DashboardView(APIView):
         user = request.user
         
         # 1. 基础档案
-        profile = user.profile
+        profile = getattr(user, 'profile', None)
+        if profile is None:
+            profile = UserProfile.objects.create(user=user)
         
         # 2. 获取近期负荷
         recent_acts = Activity.objects.filter(user=user, start_time__gte=timezone.now()-timedelta(days=7))
@@ -452,7 +518,10 @@ class DashboardView(APIView):
         # ==========================================
         # 3. [新增] 核心逻辑：今日计划完成度计算
         # ==========================================
-        active_plan = TrainingPlan.objects.filter(user=user, is_active=True).first()
+        active_plans = TrainingPlan.objects.filter(user=user, is_active=True).order_by('-created_at')
+        active_plan = active_plans.first()
+        if active_plan and active_plans.count() > 1:
+            TrainingPlan.objects.filter(user=user, is_active=True).exclude(id=active_plan.id).update(is_active=False)
         today_completed = False
         progress_percent = 0
         today_exercises = []
@@ -466,7 +535,14 @@ class DashboardView(APIView):
             
             # 3.2 从 JSON 中找出今天的计划
             plan_json = active_plan.plan_content
-            today_plan = next((day for day in plan_json if day.get('day') == current_day_num), None)
+            if not isinstance(plan_json, list):
+                logger.warning(f"用户激活计划结构异常(非list): user_id={user.id}, plan_id={active_plan.id}")
+                plan_json = []
+
+            today_plan = next(
+                (day for day in plan_json if isinstance(day, dict) and day.get('day') == current_day_num),
+                None
+            )
             
             if today_plan and today_plan.get('exercises'):
                 target_exercises = today_plan['exercises']
@@ -482,17 +558,25 @@ class DashboardView(APIView):
                 
                 # 3.3 遍历今日目标，与数据库记录进行碰撞比对
                 for ex in target_exercises:
+                    if not isinstance(ex, dict):
+                        continue
                     if ex.get('type') == 'rest':
                         today_completed = True
                         progress_percent = 100
                         continue
                         
                     # 计算目标次数: 组数 * 每组次数
-                    ex_target = ex.get('sets', 0) * ex.get('reps_per_set', 0)
+                    ex_sets = ex.get('sets', 1)
+                    ex_reps_per_set = ex.get('reps_per_set', ex.get('reps', 0))
+                    ex_target = ex_sets * ex_reps_per_set
                     total_target_reps += ex_target
                     
                     # 聚合今天这个特定动作实际做了多少次
-                    ex_actual_agg = today_activities.filter(activity_type=ex['type']).aggregate(total=Sum('total_reps'))
+                    ex_type = ex.get('type', '')
+                    if not ex_type:
+                        continue
+
+                    ex_actual_agg = today_activities.filter(activity_type=ex_type).aggregate(total=Sum('total_reps'))
                     ex_actual = ex_actual_agg['total'] or 0
                     
                     # 为了防止超额完成导致进度条爆表超过 100%，做个封顶限制
@@ -503,10 +587,12 @@ class DashboardView(APIView):
                         
                     # 组装给前端展示的详情列表
                     today_exercises.append({
-                        "type": ex['type'],
+                        "type": ex_type,
                         "target": ex_target,
                         "actual": ex_actual,
-                        "is_done": ex_actual >= ex_target
+                        "is_done": ex_actual >= ex_target,
+                        "sets": ex_sets,
+                        "reps_per_set": ex_reps_per_set
                     })
                 
                 # 3.4 最终结算百分比
@@ -746,18 +832,24 @@ class ExerciseDictionaryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # 从 Activity 模型的配置中直接动态读取，保证单点维护 (Single Source of Truth)
-        # 如果你以后在 models.py 里加了新的动作，这里会自动生效，前端也会自动多出一个选项
-        from pages.models import Activity 
-        
+        # 从 ROS 运行时配置读取动作检测包，后续新增动作仅需改配置文件
+        ros_cfg = settings.ROS_RUNTIME_CONFIG
+        exercise_dict = ros_cfg.get("exercise_dictionary", [])
+
         exercises = []
-        for code, name in Activity.ACTIVITY_TYPES:
-            # 过滤掉 'mixed_plan' 等非单项动作的宏观标记
-            if code not in ['mixed_plan']:
-                exercises.append({
-                    "code": code,
-                    "name": name
-                })
+        for item in exercise_dict:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("code", "")).strip()
+            if not code:
+                continue
+            exercises.append({
+                "code": code,
+                "name": item.get("name") or code,
+                "name_zh": item.get("name_zh") or item.get("name") or code,
+                "name_en": item.get("name_en") or code,
+                "ros_package": item.get("ros_package", "")
+            })
                 
         return Response({
             "total": len(exercises),
@@ -796,13 +888,15 @@ class TTSPlayView(APIView):
 # ============================== 新增结构化 API ==============================
 
 def _normalize_training_mode(mode_value: str) -> str:
+    mode_normalized = str(mode_value or '').strip().lower()
     mode_map = {
         'free': 'FREE',
         'guided': 'GUIDED',
+        'plan': 'GUIDED',
         'FREE': 'FREE',
         'GUIDED': 'GUIDED',
     }
-    return mode_map.get(mode_value, 'FREE')
+    return mode_map.get(mode_normalized, 'FREE')
 
 
 def _normalize_intensity(intensity_value: str) -> str:
@@ -824,6 +918,21 @@ def _safe_int(value, default_value):
         return default_value
 
 
+def _safe_float(value, default_value=None):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default_value
+
+
+def _measurement_confidence(valid_sample_count, has_rest_data, has_end_data):
+    if valid_sample_count >= 6 and has_rest_data and has_end_data:
+        return "HIGH"
+    if valid_sample_count >= 3 and (has_rest_data or has_end_data):
+        return "MED"
+    return "LOW"
+
+
 class UserProfileView(APIView):
     """A1) 用户资料查询（新增）"""
     permission_classes = [IsAuthenticated]
@@ -836,7 +945,12 @@ class UserProfileView(APIView):
         height = None
         weight = None
         if profile:
-            gender_text = profile.get_gender_display()
+            # 如果用户未选择性别 (存储为 'O' 或其他占位值)，前端显示为空，避免页面显示奇怪的 O
+            raw_gender = getattr(profile, 'gender', '')
+            if str(raw_gender).upper() == 'O' or str(raw_gender).strip() == '':
+                gender_text = ''
+            else:
+                gender_text = profile.get_gender_display()
             height = profile.height
             weight = profile.weight
         else:
@@ -850,6 +964,7 @@ class UserProfileView(APIView):
             "gender": gender_text,
             "height": height,
             "weight": weight,
+            "birthdate": profile.birthdate.isoformat() if getattr(profile, 'birthdate', None) else ''
         }
         return Response(data, status=status.HTTP_200_OK)
 
@@ -900,15 +1015,29 @@ class TrainingSessionStateView(APIView):
         if not session:
             return Response({"error": "训练会话不存在"}, status=status.HTTP_404_NOT_FOUND)
 
+        ros_cfg = settings.ROS_RUNTIME_CONFIG
+        session_rt_cfg = ros_cfg.get('session_realtime', {}) if isinstance(ros_cfg, dict) else {}
+        source_mode = str(session_rt_cfg.get('source_mode', 'simulated')).lower()
+        relay_ttl_sec = max(1, _safe_int(session_rt_cfg.get('relay_ttl_sec', 20), 20))
+
+        relay_state = get_session_realtime(session_id, ttl_sec=relay_ttl_sec)
+        has_relay_state = bool(relay_state)
+        prefer_relay = source_mode == 'client_relay'
+
         if session.status == 'FINISHED':
+            final_hr = _safe_int(relay_state.get('heart_rate'), 90) if has_relay_state else 90
+            final_spo2 = _safe_float(relay_state.get('spo2'), 99)
+            final_spo2 = 99 if final_spo2 is None else final_spo2
             return Response({
                 "session_id": session_id,
                 "status": "FINISHED",
                 "phase": "END",
-                "heart_rate": 90,
-                "spo2": 99,
+                "heart_rate": final_hr,
+                "spo2": final_spo2,
                 "current_rep": session.final_reps,
                 "target_reps": session.sets * session.reps,
+                "current_set": session.sets,
+                "total_sets": session.sets,
                 "progress": 100.0,
                 "coach_message": "训练已结束，恢复中"
             }, status=status.HTTP_200_OK)
@@ -924,6 +1053,8 @@ class TrainingSessionStateView(APIView):
         cycle_pos = elapsed_sec % cycle_len if cycle_len > 0 else 0
         work_len = session.reps * simulated_rep_speed
         phase = 'WORK' if cycle_pos < work_len else 'REST'
+        finished_cycles = (elapsed_sec // cycle_len) if cycle_len > 0 else 0
+        current_set = min(session.sets, max(1, finished_cycles + 1))
 
         intensity_map = {'low': 108, 'medium': 125, 'high': 145}
         hr_base = intensity_map.get(session.intensity, 125)
@@ -932,6 +1063,25 @@ class TrainingSessionStateView(APIView):
         progress = round((current_rep / target_reps) * 100, 1) if target_reps > 0 else 0.0
 
         coach_message = "动作节奏稳定，保持呼吸" if phase == 'WORK' else "休息阶段，调整呼吸准备下一组"
+
+        if has_relay_state and prefer_relay:
+            relay_phase = str(relay_state.get('phase', phase)).upper()
+            if relay_phase in {'WORK', 'REST', 'END'}:
+                phase = relay_phase
+
+            current_rep = max(0, min(target_reps, _safe_int(relay_state.get('current_rep'), current_rep)))
+            current_set = max(1, min(session.sets, _safe_int(relay_state.get('current_set'), current_set)))
+            heart_rate = max(0, _safe_int(relay_state.get('heart_rate'), heart_rate))
+            relay_spo2 = _safe_float(relay_state.get('spo2'), spo2)
+            spo2 = relay_spo2 if relay_spo2 is not None else spo2
+
+            relay_progress = _safe_float(relay_state.get('progress'), None)
+            if relay_progress is None:
+                progress = round((current_rep / target_reps) * 100, 1) if target_reps > 0 else 0.0
+            else:
+                progress = round(max(0.0, min(100.0, relay_progress)), 1)
+
+            coach_message = str(relay_state.get('coach_message') or coach_message)
 
         if session.phase != phase:
             session.phase = phase
@@ -945,6 +1095,8 @@ class TrainingSessionStateView(APIView):
             "spo2": spo2,
             "current_rep": current_rep,
             "target_reps": target_reps,
+            "current_set": current_set,
+            "total_sets": session.sets,
             "progress": progress,
             "coach_message": coach_message
         }, status=status.HTTP_200_OK)
@@ -961,12 +1113,29 @@ class TrainingSessionFinishView(APIView):
 
         if session.status == 'FINISHED':
             activity_id = session.activity_id
-            return Response({"msg": "训练会话已结束", "activity_id": activity_id}, status=status.HTTP_200_OK)
+            return Response({
+                "msg": "训练会话已结束",
+                "activity_id": activity_id,
+                "analysis_status": "PROCESSING" if activity_id and not AIFeedback.objects.filter(activity_id=activity_id).exists() else "COMPLETED"
+            }, status=status.HTTP_200_OK)
 
+        data = request.data
+        ros_cfg = settings.ROS_RUNTIME_CONFIG
+        session_rt_cfg = ros_cfg.get('session_realtime', {}) if isinstance(ros_cfg, dict) else {}
+        relay_ttl_sec = max(1, _safe_int(session_rt_cfg.get('relay_ttl_sec', 20), 20))
+        relay_state = get_session_realtime(session_id, ttl_sec=relay_ttl_sec)
         created_at = session.started_at
         duration_sec = max(1, int((timezone.now() - created_at).total_seconds()))
         target_reps = session.sets * session.reps
-        current_rep = min(target_reps, duration_sec // 3)
+        default_rep = duration_sec // 3
+        current_rep = _safe_int(data.get('final_reps', data.get('total_reps', default_rep)), default_rep)
+        if relay_state:
+            current_rep = _safe_int(relay_state.get('current_rep', current_rep), current_rep)
+        current_rep = max(0, min(target_reps, current_rep))
+
+        perceived_exertion = _safe_int(data.get('perceived_exertion', 3), 3)
+        perceived_exertion = max(1, min(5, perceived_exertion))
+        error_count = max(0, _safe_int(data.get('error_count', 0), 0))
 
         training_mode = _normalize_training_mode(session.mode)
         normalized_intensity = _normalize_intensity(session.intensity)
@@ -989,8 +1158,55 @@ class TrainingSessionFinishView(APIView):
             duration=duration_sec,
             total_reps=current_rep,
             intensity=normalized_intensity,
-            perceived_exertion=3,
+            perceived_exertion=perceived_exertion,
         )
+
+        raw_time_series = data.get('time_series', [])
+        valid_phases = {'REST', 'END'}
+        filtered_ts_objects = []
+        valid_measurement_count = 0
+
+        if isinstance(raw_time_series, list):
+            for ts in raw_time_series:
+                if not isinstance(ts, dict):
+                    continue
+
+                phase = str(ts.get('phase', 'REST')).upper()
+                if phase not in valid_phases:
+                    continue
+
+                is_stable = bool(ts.get('is_stable', True))
+                hold_secs = max(0, _safe_int(ts.get('hold_secs', 0), 0))
+                if not is_stable:
+                    continue
+                if hold_secs and hold_secs < 3:
+                    continue
+
+                heart_rate = _safe_int(ts.get('heart_rate'), None)
+                spo2 = _safe_float(ts.get('spo2'), None)
+                if heart_rate is None and spo2 is None:
+                    continue
+
+                offset = _safe_int(ts.get('offset', 0), 0)
+                offset = max(0, offset)
+                current_rep_count = max(0, _safe_int(ts.get('current_rep', current_rep), current_rep))
+
+                filtered_ts_objects.append(
+                    ActivityTimeSeries(
+                        activity=activity,
+                        timestamp_offset=offset,
+                        phase=phase,
+                        heart_rate=heart_rate,
+                        spo2=spo2,
+                        current_rep_count=current_rep_count
+                    )
+                )
+                valid_measurement_count += 1
+
+        if filtered_ts_objects:
+            ActivityTimeSeries.objects.bulk_create(filtered_ts_objects)
+
+        pop_session_realtime(session_id)
 
         session.status = 'FINISHED'
         session.phase = 'END'
@@ -999,7 +1215,107 @@ class TrainingSessionFinishView(APIView):
         session.ended_at = timezone.now()
         session.save(update_fields=['status', 'phase', 'activity', 'final_reps', 'ended_at'])
 
+        def background_llm_task(act_id, user_id):
+            try:
+                ts_qs = ActivityTimeSeries.objects.filter(activity_id=act_id)
+                rest_qs = ts_qs.filter(phase='REST')
+                end_qs = ts_qs.filter(phase='END')
+
+                rest_hr_values = [v for v in rest_qs.values_list('heart_rate', flat=True) if v is not None]
+                rest_spo2_values = [v for v in rest_qs.values_list('spo2', flat=True) if v is not None]
+                end_hr_values = [v for v in end_qs.values_list('heart_rate', flat=True) if v is not None]
+                end_spo2_values = [v for v in end_qs.values_list('spo2', flat=True) if v is not None]
+
+                rest_hr_median = round(median(rest_hr_values)) if rest_hr_values else 90
+                rest_spo2_median = round(median(rest_spo2_values), 1) if rest_spo2_values else 98.0
+                end_hr = round(median(end_hr_values)) if end_hr_values else rest_hr_median
+                end_spo2 = round(median(end_spo2_values), 1) if end_spo2_values else rest_spo2_median
+
+                valid_sample_count = ts_qs.filter(heart_rate__isnull=False).count() + ts_qs.filter(spo2__isnull=False).count()
+                has_rest_data = bool(rest_hr_values or rest_spo2_values)
+                has_end_data = bool(end_hr_values or end_spo2_values)
+                confidence = _measurement_confidence(valid_sample_count, has_rest_data, has_end_data)
+
+                llm_payload = {
+                    "target_reps": target_reps,
+                    "actual_reps": current_rep,
+                    "error_count": error_count,
+                    "rpe_score": perceived_exertion,
+                    "rest_hr_median": rest_hr_median,
+                    "rest_spo2_median": rest_spo2_median,
+                    "end_hr": end_hr,
+                    "end_spo2": end_spo2,
+                    "valid_sample_count": valid_sample_count,
+                    "measurement_confidence": confidence,
+                    # 兼容旧提示词字段
+                    "avg_rest_hr": rest_hr_median,
+                    "min_spo2": rest_spo2_median,
+                }
+
+                result_json = generate_post_workout_feedback(llm_payload)
+                if result_json:
+                    new_score = result_json.get('quality_score', 5)
+                    Activity.objects.filter(id=act_id).update(quality_score=new_score)
+
+                    AIFeedback.objects.update_or_create(
+                        activity_id=act_id,
+                        defaults={
+                            'feedback_text': result_json.get('feedback_text', '干得很棒！'),
+                            'next_step_suggestion': "系统基于最新运动表现自动调优",
+                        }
+                    )
+
+                    new_plan = result_json.get('new_plan')
+                    if new_plan:
+                        TrainingPlan.objects.filter(user_id=user_id, is_active=True).update(is_active=False)
+                        TrainingPlan.objects.create(
+                            user_id=user_id,
+                            plan_content=new_plan,
+                            is_active=True,
+                            plan_type='LLM_GENERATED'
+                        )
+            except Exception as e:
+                logger.error(f"会话结算AI分析任务执行失败: {str(e)}")
+            finally:
+                connection.close()
+
+        thread = threading.Thread(target=background_llm_task, args=(activity.id, request.user.id))
+        thread.start()
+
         return Response({
             "msg": "训练会话已结束",
-            "activity_id": activity.id
-        }, status=status.HTTP_200_OK)
+            "activity_id": activity.id,
+            "saved_timeseries_count": len(filtered_ts_objects),
+            "analysis_status": "PROCESSING"
+        }, status=status.HTTP_202_ACCEPTED)
+
+
+class TrainingSessionRealtimeIngestView(APIView):
+    """A5) 训练会话实时数据回传（前端 ROS 订阅后统一上报后端）"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, session_id):
+        session = TrainingSession.objects.filter(session_id=session_id, user=request.user).first()
+        if not session:
+            return Response({"error": "训练会话不存在"}, status=status.HTTP_404_NOT_FOUND)
+
+        if session.status == 'FINISHED':
+            return Response({"msg": "训练会话已结束，忽略实时上报"}, status=status.HTTP_200_OK)
+
+        data = request.data if isinstance(request.data, dict) else {}
+
+        payload = {
+            "phase": str(data.get('phase', session.phase or 'WORK')).upper(),
+            "heart_rate": max(0, _safe_int(data.get('heart_rate'), 0)),
+            "spo2": _safe_float(data.get('spo2'), None),
+            "current_rep": max(0, _safe_int(data.get('current_rep', 0), 0)),
+            "current_set": max(1, _safe_int(data.get('current_set', 1), 1)),
+            "progress": _safe_float(data.get('progress'), None),
+            "coach_message": str(data.get('coach_message', '')).strip(),
+        }
+
+        if payload["phase"] not in {'WORK', 'REST', 'END'}:
+            payload["phase"] = session.phase or 'WORK'
+
+        upsert_session_realtime(session_id, payload)
+        return Response({"msg": "实时状态已接收"}, status=status.HTTP_200_OK)

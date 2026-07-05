@@ -12,6 +12,8 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 
+from config.ros_config import load_ros_runtime_config
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -158,6 +160,11 @@ SASS_PROCESSOR_ROOT = BASE_DIR / "static"
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 CORS_ALLOW_ALL_ORIGINS = True
+
+# ROS runtime config (Windows 调试 / RK3588 实机)
+ROS_RUNTIME_CONFIG = load_ros_runtime_config(BASE_DIR)
+ROS_RUNTIME_MODE = ROS_RUNTIME_CONFIG.get('runtime_mode', 'windows_debug')
+ROS_DEBUG_MODE = bool(ROS_RUNTIME_CONFIG.get('debug_mode', False))
 
 # CORS_ALLOWED_ORIGINS = [
 #     "http://localhost:5173",

@@ -1,0 +1,55 @@
+# ROS 运行时配置（统一维护）
+# 可选模式：windows_debug / rk3588
+runtime_mode: windows_debug
+
+# 训练会话实时数据源切换：
+# - simulated: 后端使用内置模拟数据（便于联调/测试）
+# - client_relay: 前端将 ROS 实时数据回传后端，后端作为统一数据源
+session_realtime:
+  source_mode: simulated
+  relay_ttl_sec: 20
+
+profiles:
+  windows_debug:
+    rosbridge_url: "ws://127.0.0.1:9090"
+    mjpeg_stream_url: "http://127.0.0.1:8080/stream?topic=/pose/image&type=mjpeg"
+    reconnect_delay_ms: 3000
+
+  rk3588:
+    rosbridge_url: "ws://192.168.123.104:9090"
+    mjpeg_stream_url: "http://192.168.123.103:8080/stream?topic=/pose/image&type=mjpeg"
+    reconnect_delay_ms: 3000
+
+# 统一 topic 映射，前后端都应从这里读取
+topics:
+  pose_image: "/pose/image"
+
+  squat:
+    control: "/squat/control"
+    state: "/squat/state"
+    rep_completed: "/squat/rep_completed"
+    errors: "/squat/errors"
+
+  heart:
+    control: "/heart_sensor_node/control"
+    heart_rate: "/heart_sensor_node/heart_rate"
+    spo2: "/heart_sensor_node/spo2"
+    packet_loss: "/heart_sensor_node/packet_loss"
+
+  llm:
+    # 与当前页面实现保持一致
+    output_string: "/rkllm/output_string"
+
+# 动作识别 ROS 包配置（可扩展）
+# 后续新增动作时，新增一个条目并启用 enabled 即可让前端动作字典自动生效
+action_detectors:
+  - code: "squat"
+    name_zh: "深蹲"
+    name_en: "Squat"
+    ros_package: "squat_evaluator"
+    enabled: true
+    topics:
+      control: "/squat/control"
+      state: "/squat/state"
+      rep_completed: "/squat/rep_completed"
+      errors: "/squat/errors"
