@@ -7,6 +7,8 @@ class UserProfile(models.Model):
     GENDER_CHOICES = (('M', '男'), ('F', '女'), ('O', '其他'))
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     gender = models.CharField(max_length=1, choices=GENDER_CHOICES, default='O', verbose_name="性别")
+    phone = models.CharField(max_length=20, null=True, blank=True, verbose_name="手机号")
+    avatar = models.URLField(max_length=500, null=True, blank=True, verbose_name="头像URL")
     height = models.FloatField(null=True, blank=True, verbose_name="身高(cm)")
     weight = models.FloatField(null=True, blank=True, verbose_name="体重(kg)")
     hr_max = models.IntegerField(default=190, verbose_name="最大心率")
@@ -96,6 +98,42 @@ class ActivityTimeSeries(models.Model):
     class Meta:
         indexes = [models.Index(fields=['activity', 'timestamp_offset'])]
         ordering = ['timestamp_offset']
+
+
+class TrainingSession(models.Model):
+    """训练会话持久化表（用于结构化会话API）"""
+    STATUS_CHOICES = (
+        ('RUNNING', '进行中'),
+        ('FINISHED', '已结束'),
+    )
+    PHASE_CHOICES = (
+        ('WORK', '运动中'),
+        ('REST', '组间休息'),
+        ('END', '训练结束'),
+    )
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='training_sessions')
+    session_id = models.CharField(max_length=64, unique=True, db_index=True, verbose_name="会话ID")
+    mode = models.CharField(max_length=20, default='free', verbose_name="训练模式")
+    exercises = models.JSONField(default=list, verbose_name="动作列表")
+    sets = models.IntegerField(default=1, verbose_name="组数")
+    reps = models.IntegerField(default=1, verbose_name="每组次数")
+    rest_sec = models.IntegerField(default=45, verbose_name="组间休息秒数")
+    intensity = models.CharField(max_length=20, default='medium', verbose_name="训练强度")
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='RUNNING', verbose_name="会话状态")
+    phase = models.CharField(max_length=10, choices=PHASE_CHOICES, default='WORK', verbose_name="当前阶段")
+    started_at = models.DateTimeField(auto_now_add=True, verbose_name="开始时间")
+    ended_at = models.DateTimeField(null=True, blank=True, verbose_name="结束时间")
+    final_reps = models.IntegerField(default=0, verbose_name="最终次数")
+
+    activity = models.ForeignKey(Activity, null=True, blank=True, on_delete=models.SET_NULL, related_name='source_sessions')
+
+    class Meta:
+        ordering = ['-started_at']
+
+    def __str__(self):
+        return f"{self.session_id} ({self.get_status_display()})"
 
 
 class AIFeedback(models.Model):

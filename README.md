@@ -18,6 +18,59 @@ pnpm install
 uv run manage.py runserver 0.0.0.0:8000
 ```
 
+## ✅ 当前后端实现进度（截至本次更新）
+
+### 1) 数据模型新增与调整
+
+- `UserProfile` 新增字段：
+  - `phone`（手机号）
+  - `avatar`（头像 URL）
+- 新增 `TrainingSession` 模型（结构化训练会话持久化）：
+  - `session_id`, `mode`, `exercises`, `sets`, `reps`, `rest_sec`, `intensity`
+  - `status`, `phase`, `started_at`, `ended_at`, `final_reps`
+  - `activity`（结束后关联 `Activity`）
+
+> 迁移文件：`pages/migrations/0003_userprofile_phone_avatar_trainingsession.py`
+
+### 2) 鉴权策略收敛（JWT）
+
+除公开接口（注册/登录/人脸登录/TTS播报）外，主要业务接口已统一要求 JWT。
+
+**公开接口：**
+- `POST /api/auth/register/`
+- `POST /api/auth/login/`
+- `POST /api/auth/face-login/`
+- `POST /api/train/tts-play/`
+
+**需 JWT 的主要接口：**
+- `POST /api/auth/face-register/`
+- `POST /api/plan/init-generate/`
+- `GET/POST /api/plan/current/`
+- `GET /api/user/dashboard/`
+- `GET /api/user/load/`
+- `GET /api/user/activities/`
+- `GET /api/user/activities/<pk>/`
+- `GET /api/train/status/<pk>/`
+- `POST /api/train/micro-coach/`
+- `POST /api/train/finish/`
+- `POST /api/chat/ask/`
+- `GET /api/train/exercises/`
+
+### 3) 新增结构化会话 API（已接入后端）
+
+- `GET /api/user/profile/`（用户资料）
+- `POST /api/train/session/start/`（开始会话）
+- `GET /api/train/session/<session_id>/state/`（会话状态轮询）
+- `POST /api/train/session/<session_id>/finish/`（结束会话并落盘 Activity）
+
+### 4) 当前状态说明
+
+- 结构化会话能力已从“进程内存”升级为“数据库持久化”，服务重启后会话可追溯。
+- `A3` 会话状态接口目前为后端模拟状态（心率/血氧/进度）用于联调，后续可切换到 ROS 实时数据。
+- API 详细入参与响应示例，请见：`API接口汇总与示例.md`。
+
+---
+
 
 1. 后端验证采用 Token 认证（如JWT）时，后端成功验证身份后会返回一段加密字符串。触屏前端或手机 App 只需要将其存入本地存储（LocalStorage 或 App 原生安全存储），并在后续每次向后端发送 HTTP 请求时，在请求头中附带 Authorization: Bearer <Token> 即可  
 2. 我的业务逻辑目前规划是设计以下几个界面：
@@ -46,6 +99,8 @@ uv run manage.py runserver 0.0.0.0:8000
 
 * `user`: `OneToOneField(User)`
 * `gender`: `CharField` (性别选择：'M'男, 'F'女, 'O'其他)
+* `phone`: `CharField` (手机号，可选)
+* `avatar`: `URLField` (头像链接，可选)
 * `height`, `weight`: `FloatField` (身高cm，体重kg)
 * `hr_max`: `IntegerField` (最大心率，默认190)
 * `face_feature_id`: `CharField` (绑定的特征向量ID，用于快速关联)
@@ -104,6 +159,22 @@ uv run manage.py runserver 0.0.0.0:8000
 * `next_step_suggestion`: `TextField` (后续计划优化建议)
 * `created_at`: `DateTimeField`
 
+### 7. TrainingSession (结构化训练会话持久化表)
+
+用于前端 `src/api` 新增训练会话流（开始/轮询/结束）的数据库持久化。
+
+* `user`: `ForeignKey(User)`
+* `session_id`: `CharField(unique=True, index=True)`
+* `mode`: `CharField` (`free` / `guided`)
+* `exercises`: `JSONField` (动作编码数组)
+* `sets`, `reps`, `rest_sec`: `IntegerField`
+* `intensity`: `CharField` (`low` / `medium` / `high`)
+* `status`: `CharField` (`RUNNING` / `FINISHED`)
+* `phase`: `CharField` (`WORK` / `REST` / `END`)
+* `started_at`, `ended_at`: `DateTimeField`
+* `final_reps`: `IntegerField`
+* `activity`: `ForeignKey(Activity, null=True)`（结束时关联训练记录）
+
 ---
 
 ## 贰、 核心 API 接口列表 (RESTful & JWT)
@@ -131,6 +202,9 @@ uv run manage.py runserver 0.0.0.0:8000
 
 ### 模块 2：主页聚合与用户数据 (Dashboard & Data)
 
+* **`GET /api/user/profile/`：用户资料查询（新增）**
+* **功能**：返回当前登录用户基础资料，用于“我”页面展示（`username/phone/role/avatar/gender/height/weight`）。
+
 * **`GET /api/user/dashboard/`：主页超级聚合面板**
 * **功能**：一次性拉取一体机主页所需的所有核心数据。包括基础档案、近 7 日总训练耗时、**今日计划精准进度计算**（底层遍历 JSON 计划与今日真实运动记录比对），并动态触发系统级入场语音（如：“欢迎回来，今天还有进度未完成”）。
 
@@ -153,6 +227,17 @@ uv run manage.py runserver 0.0.0.0:8000
 
 
 ### 模块 3：AI 教练与训练中枢 (Training & AI)
+
+* **`POST /api/train/session/start/`：开始训练会话（新增）**
+* **功能**：接收自由训练配置（动作/组数/次数/休息/强度），创建持久化会话 `session_id`，用于训练页状态机驱动。
+
+
+* **`GET /api/train/session/<session_id>/state/`：训练会话状态轮询（新增）**
+* **功能**：按会话返回当前状态（`status/phase/progress/heart_rate/spo2/current_rep` 等），用于前端实时看板刷新。
+
+
+* **`POST /api/train/session/<session_id>/finish/`：结束训练会话（新增）**
+* **功能**：结束指定会话并自动生成一条 `Activity` 记录，回传 `activity_id` 供后续详情/复盘调用。
 
 * **`POST /api/plan/init-generate/`：AI 初始计划生成**
 * **功能**：新用户注册后，前端携带目标（如“减脂塑形”）调用。后端结合用户档案身高体重，调度 LLM 生成结构化 JSON 训练计划落盘。自带容灾机制，若大模型拥堵会自适应下发基础兜底计划。

@@ -16,7 +16,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.utils import timezone
 import threading
 from datetime import timedelta
-from pages.models import Activity, ActivityTimeSeries, AIFeedback, TrainingPlan, UserProfile, UserFaceEmbedding
+from uuid import uuid4
+from pages.models import Activity, ActivityTimeSeries, AIFeedback, TrainingPlan, UserProfile, UserFaceEmbedding, TrainingSession
 from services.tts_service import play_tts_sync
 from services.llm_service import generate_micro_coaching, generate_post_workout_feedback, load_yaml, call_local_llm
 from services.face_service import process_face_pipeline, verify_face_1_to_N
@@ -144,11 +145,10 @@ class FaceEnrollView(APIView):
     """
     一体机人脸特征采集/录入接口 (POST)
     """
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
-        # 权限控制：强制要求录入前用户必须处于登录状态 (通过 JWT 验证)
         user = request.user
-        if not user.is_authenticated:
-            return Response({"code": "UNAUTHORIZED", "msg": "请先登录账号再进行人脸绑定"}, status=status.HTTP_401_UNAUTHORIZED)
             
         face_data_base64 = request.data.get('face_data')
         if not face_data_base64:
@@ -251,14 +251,11 @@ class ActivityListView(APIView):
     对应规划：查询训练记录 (GET)
     支持触屏端和App拉取历史记录列表
     """
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
-        # 联调阶段：如果用户未登录则默认查询所有记录；App端上线后可改为强制过滤当前用户
-        user = request.user if request.user.is_authenticated else None
-        
-        if user:
-            activities = Activity.objects.filter(user=user)
-        else:
-            activities = Activity.objects.all()
+        user = request.user
+        activities = Activity.objects.filter(user=user)
             
         # 构造精简的 JSON 列表结构返回给前端
         data = []
@@ -278,15 +275,13 @@ class ActivityDetailView(APIView):
     """
     查询单次训练的详细记录 (包含 AI 报告与高频心率血氧数据)
     """
+    permission_classes = [IsAuthenticated]
+
     def get(self, request, pk):
-        user = request.user if request.user.is_authenticated else None
+        user = request.user
         
         try:
-            # 安全控制：只能查询当前用户的记录，或者未登录时放开（联调期）
-            if user:
-                activity = Activity.objects.get(pk=pk, user=user)
-            else:
-                activity = Activity.objects.get(pk=pk)
+            activity = Activity.objects.get(pk=pk, user=user)
         except Activity.DoesNotExist:
             return Response({"error": "未找到该条训练记录，或无权访问"}, status=status.HTTP_404_NOT_FOUND)
             
@@ -331,13 +326,11 @@ class ActivityStatusView(APIView):
     """
     查询指定 Activity 的后台 AI 分析是否完成 (GET)
     """
+    permission_classes = [IsAuthenticated]
+
     def get(self, request, pk):
         try:
-            # 安全起见，加上 user 过滤防止越权查询
-            if request.user.is_authenticated:
-                activity = Activity.objects.get(pk=pk, user=request.user)
-            else:
-                activity = Activity.objects.get(pk=pk)
+            activity = Activity.objects.get(pk=pk, user=request.user)
         except Activity.DoesNotExist:
             return Response({"error": "未找到该训练记录"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -363,9 +356,11 @@ class TrainingPlanView(APIView):
     对应规划：更新训练计划 (POST) / 获取当前计划 (GET)
     通过大模型或前端手动调整一周的计划指标
     """
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
         """获取当前正在执行的激活计划"""
-        user = request.user if request.user.is_authenticated else None
+        user = request.user
         plan = TrainingPlan.objects.filter(user=user, is_active=True).first()
         
         if not plan:
@@ -379,7 +374,7 @@ class TrainingPlanView(APIView):
 
     def post(self, request):
         """前端或大模型更新、覆盖训练计划"""
-        user = request.user if request.user.is_authenticated else None
+        user = request.user
         new_plan_content = request.data.get('plan_content')
         
         if not new_plan_content:
@@ -402,18 +397,19 @@ class TrainingLoadView(APIView):
     对应规划：查询训练负荷 (GET)
     【核心逻辑】：后端自动查询最近 7 天的滚动数据，计算出累计运动负荷值
     """
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
-        user = request.user if request.user.is_authenticated else None
+        user = request.user
         
         # 计算 7 天前的时间节点
         seven_days_ago = timezone.now() - timedelta(days=7)
         
         # 查询最近 7 天该用户的所有运动记录
         recent_activities = Activity.objects.filter(
+            user=user,
             start_time__gte=seven_days_ago
         )
-        if user:
-            recent_activities = recent_activities.filter(user=user)
             
         # 负荷计算权重算法：高强度权重为3，中强度为2，低强度为1
         total_load = 0
@@ -441,10 +437,10 @@ class TrainingLoadView(APIView):
 
 class DashboardView(APIView):
     """主页聚合接口 (GET) - 一次性拉取用户核心数据及今日任务进度"""
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
         user = request.user
-        if not user.is_authenticated:
-            return Response({"error": "未登录"}, status=status.HTTP_401_UNAUTHORIZED)
         
         # 1. 基础档案
         profile = user.profile
@@ -541,6 +537,8 @@ class DashboardView(APIView):
         })
 class MicroCoachView(APIView):
     """组间话疗微指导 (POST)"""
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         activity_type = request.data.get('activity_type', '运动')
         error_text = request.data.get('error_text', '姿势标准')
@@ -555,6 +553,8 @@ class MicroCoachView(APIView):
 
 class TrainFinishView(APIView):
     """训练核心中枢结算接口 (POST)"""
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         user = request.user
         data = request.data
@@ -743,6 +743,8 @@ class ExerciseDictionaryView(APIView):
     查询系统当前支持的所有具体运动动作库 (GET)
     专为前端“自由训练”模式提供动作选单
     """
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
         # 从 Activity 模型的配置中直接动态读取，保证单点维护 (Single Source of Truth)
         # 如果你以后在 models.py 里加了新的动作，这里会自动生效，前端也会自动多出一个选项
@@ -789,3 +791,215 @@ class TTSPlayView(APIView):
             
         except Exception as e:
             return Response({"error": f"硬件扬声器调用失败: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ============================== 新增结构化 API ==============================
+
+def _normalize_training_mode(mode_value: str) -> str:
+    mode_map = {
+        'free': 'FREE',
+        'guided': 'GUIDED',
+        'FREE': 'FREE',
+        'GUIDED': 'GUIDED',
+    }
+    return mode_map.get(mode_value, 'FREE')
+
+
+def _normalize_intensity(intensity_value: str) -> str:
+    intensity_map = {
+        'low': 'LOW',
+        'medium': 'MED',
+        'high': 'HIGH',
+        'LOW': 'LOW',
+        'MED': 'MED',
+        'HIGH': 'HIGH',
+    }
+    return intensity_map.get(intensity_value, 'MED')
+
+
+def _safe_int(value, default_value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default_value
+
+
+class UserProfileView(APIView):
+    """A1) 用户资料查询（新增）"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        profile = getattr(user, 'profile', None)
+
+        gender_text = ''
+        height = None
+        weight = None
+        if profile:
+            gender_text = profile.get_gender_display()
+            height = profile.height
+            weight = profile.weight
+        else:
+            profile = UserProfile.objects.create(user=user)
+
+        data = {
+            "username": user.username,
+            "phone": profile.phone or '',
+            "role": "管理员" if user.is_staff else "普通用户",
+            "avatar": profile.avatar or '',
+            "gender": gender_text,
+            "height": height,
+            "weight": weight,
+        }
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class TrainingSessionStartView(APIView):
+    """A2) 开始训练会话（新增）"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        data = request.data
+        mode = str(data.get('mode', 'free')).lower()
+        exercises = data.get('exercises', [])
+        sets = _safe_int(data.get('sets', 1), 1)
+        reps = _safe_int(data.get('reps', 1), 1)
+        rest_sec = _safe_int(data.get('restSec', 45), 45)
+        intensity = str(data.get('intensity', 'medium')).lower()
+
+        if not isinstance(exercises, list) or len(exercises) == 0:
+            return Response({"error": "exercises 必须为非空数组"}, status=status.HTTP_400_BAD_REQUEST)
+
+        session_id = f"sess_{timezone.now().strftime('%Y%m%d')}_{uuid4().hex[:8]}"
+
+        TrainingSession.objects.create(
+            user=request.user,
+            session_id=session_id,
+            mode=mode,
+            exercises=exercises,
+            sets=max(1, sets),
+            reps=max(1, reps),
+            rest_sec=max(1, rest_sec),
+            intensity=intensity,
+            status='RUNNING',
+            phase='WORK'
+        )
+
+        return Response({
+            "session_id": session_id,
+            "msg": "训练会话创建成功"
+        }, status=status.HTTP_200_OK)
+
+
+class TrainingSessionStateView(APIView):
+    """A3) 训练会话状态轮询（新增）"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, session_id):
+        session = TrainingSession.objects.filter(session_id=session_id, user=request.user).first()
+        if not session:
+            return Response({"error": "训练会话不存在"}, status=status.HTTP_404_NOT_FOUND)
+
+        if session.status == 'FINISHED':
+            return Response({
+                "session_id": session_id,
+                "status": "FINISHED",
+                "phase": "END",
+                "heart_rate": 90,
+                "spo2": 99,
+                "current_rep": session.final_reps,
+                "target_reps": session.sets * session.reps,
+                "progress": 100.0,
+                "coach_message": "训练已结束，恢复中"
+            }, status=status.HTTP_200_OK)
+
+        created_at = session.started_at
+        elapsed_sec = max(0, int((timezone.now() - created_at).total_seconds()))
+        target_reps = session.sets * session.reps
+
+        simulated_rep_speed = 3  # 平均每 3 秒完成 1 次
+        current_rep = min(target_reps, elapsed_sec // simulated_rep_speed)
+
+        cycle_len = (session.reps * simulated_rep_speed) + session.rest_sec
+        cycle_pos = elapsed_sec % cycle_len if cycle_len > 0 else 0
+        work_len = session.reps * simulated_rep_speed
+        phase = 'WORK' if cycle_pos < work_len else 'REST'
+
+        intensity_map = {'low': 108, 'medium': 125, 'high': 145}
+        hr_base = intensity_map.get(session.intensity, 125)
+        heart_rate = hr_base if phase == 'WORK' else max(95, hr_base - 18)
+        spo2 = 98 if phase == 'WORK' else 99
+        progress = round((current_rep / target_reps) * 100, 1) if target_reps > 0 else 0.0
+
+        coach_message = "动作节奏稳定，保持呼吸" if phase == 'WORK' else "休息阶段，调整呼吸准备下一组"
+
+        if session.phase != phase:
+            session.phase = phase
+            session.save(update_fields=['phase'])
+
+        return Response({
+            "session_id": session_id,
+            "status": "RUNNING",
+            "phase": phase,
+            "heart_rate": heart_rate,
+            "spo2": spo2,
+            "current_rep": current_rep,
+            "target_reps": target_reps,
+            "progress": progress,
+            "coach_message": coach_message
+        }, status=status.HTTP_200_OK)
+
+
+class TrainingSessionFinishView(APIView):
+    """A4) 结束训练会话（新增）"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, session_id):
+        session = TrainingSession.objects.filter(session_id=session_id, user=request.user).first()
+        if not session:
+            return Response({"error": "训练会话不存在"}, status=status.HTTP_404_NOT_FOUND)
+
+        if session.status == 'FINISHED':
+            activity_id = session.activity_id
+            return Response({"msg": "训练会话已结束", "activity_id": activity_id}, status=status.HTTP_200_OK)
+
+        created_at = session.started_at
+        duration_sec = max(1, int((timezone.now() - created_at).total_seconds()))
+        target_reps = session.sets * session.reps
+        current_rep = min(target_reps, duration_sec // 3)
+
+        training_mode = _normalize_training_mode(session.mode)
+        normalized_intensity = _normalize_intensity(session.intensity)
+        exercises = session.exercises or []
+        if len(exercises) == 1:
+            activity_type = exercises[0]
+        elif len(exercises) > 1:
+            activity_type = 'mixed_plan'
+        else:
+            activity_type = 'mixed_plan'
+
+        valid_activity_codes = {code for code, _ in Activity.ACTIVITY_TYPES}
+        if activity_type not in valid_activity_codes:
+            activity_type = 'mixed_plan'
+
+        activity = Activity.objects.create(
+            user=request.user,
+            training_mode=training_mode,
+            activity_type=activity_type,
+            duration=duration_sec,
+            total_reps=current_rep,
+            intensity=normalized_intensity,
+            perceived_exertion=3,
+        )
+
+        session.status = 'FINISHED'
+        session.phase = 'END'
+        session.activity = activity
+        session.final_reps = current_rep
+        session.ended_at = timezone.now()
+        session.save(update_fields=['status', 'phase', 'activity', 'final_reps', 'ended_at'])
+
+        return Response({
+            "msg": "训练会话已结束",
+            "activity_id": activity.id
+        }, status=status.HTTP_200_OK)
