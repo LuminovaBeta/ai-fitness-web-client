@@ -79,5 +79,3 @@ logs/
 *.log
 *.pot
 *.pyg
-
-*.onnx
