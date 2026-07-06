@@ -165,26 +165,34 @@ def _coerce_plan_content(plan_json):
 
 
 def _get_allowed_plan_exercise_codes() -> list[str]:
-    """获取计划生成允许的动作代码（不包含 rest）。"""
+    """获取计划生成允许的动作代码（仅来源于 ros_runtime.yaml，且不包含 rest）。"""
+    ros_cfg = getattr(settings, 'ROS_RUNTIME_CONFIG', {}) or {}
+    if not isinstance(ros_cfg, dict):
+        return []
+
     allowed: list[str] = []
 
-    # 1) 运行时动作字典（与前端可选项保持一致）
-    ros_cfg = getattr(settings, 'ROS_RUNTIME_CONFIG', {}) or {}
-    exercise_dict = ros_cfg.get('exercise_dictionary', []) if isinstance(ros_cfg, dict) else []
-    for item in exercise_dict:
-        if not isinstance(item, dict):
-            continue
-        code = _normalize_activity_code(item.get('code', ''))
-        if code and code != 'mixed_plan':
-            allowed.append(code)
+    # 首选：exercise_dictionary（由 ros_runtime.yaml 的 action_detectors 派生）
+    exercise_dict = ros_cfg.get('exercise_dictionary', [])
+    if isinstance(exercise_dict, list):
+        for item in exercise_dict:
+            if not isinstance(item, dict):
+                continue
+            code = _normalize_activity_code(item.get('code', ''))
+            if code and code not in ('mixed_plan', 'rest'):
+                allowed.append(code)
 
-    # 2) 并入 Django 模型枚举（防止字典未覆盖全部动作）
-    for code, _ in Activity.ACTIVITY_TYPES:
-        n = _normalize_activity_code(code)
-        if n and n != 'mixed_plan':
-            allowed.append(n)
+    # 兜底：直接读取 enabled_action_detectors（仍然来自 ros_runtime.yaml）
+    if not allowed:
+        detectors = ros_cfg.get('enabled_action_detectors', [])
+        if isinstance(detectors, list):
+            for item in detectors:
+                if not isinstance(item, dict):
+                    continue
+                code = _normalize_activity_code(item.get('code', ''))
+                if code and code not in ('mixed_plan', 'rest'):
+                    allowed.append(code)
 
-    # 去重保序
     return list(dict.fromkeys(allowed))
 
 
@@ -1148,10 +1156,17 @@ def _activity_display_name_zh(activity_code: str) -> str:
         if str(item.get('code', '')).strip() == code:
             return str(item.get('name_zh') or item.get('name') or code)
 
-    # 回退到 Django 枚举文案（取中文部分）
-    label_map = {item_code: label for item_code, label in Activity.ACTIVITY_TYPES}
-    raw_label = str(label_map.get(code, code))
-    return raw_label.split('(')[0].strip() or code
+    # 最终兜底：使用内置中文文案，不依赖 Activity.ACTIVITY_TYPES
+    fallback_name_map = {
+        'squat': '深蹲',
+        'jumping_jack': '开合跳',
+        'lunge': '弓箭步',
+        'push_up': '俯卧撑',
+        'pushup': '俯卧撑',
+        'plank': '平板支撑',
+        'mixed_plan': '混合计划',
+    }
+    return fallback_name_map.get(code, code)
 
 
 def _safe_int(value, default_value):
@@ -1519,7 +1534,8 @@ class TrainingSessionFinishView(APIView):
         else:
             activity_type = 'mixed_plan'
 
-        valid_activity_codes = {code for code, _ in Activity.ACTIVITY_TYPES}
+        valid_activity_codes = set(_get_allowed_plan_exercise_codes())
+        valid_activity_codes.add('mixed_plan')
         if activity_type not in valid_activity_codes:
             activity_type = 'mixed_plan'
 
