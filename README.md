@@ -25,16 +25,11 @@ uv run manage.py runserver 0.0.0.0:8000
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 
-后端 `services/llm_service.py` 已改为优先调用本地 OpenAI 兼容服务，默认地址：
+后端 `services/llm_service.py` 已改为读取 `config/llm_rules.yaml` 中的配置进行调用，关键项：
 
-- `LOCAL_OPENAI_BASE_URL=http://127.0.0.1:8080`
-
-可通过环境变量覆盖：
-
-- `LOCAL_OPENAI_BASE_URL`
-- `LOCAL_OPENAI_API_KEY`
-- `LOCAL_OPENAI_MODEL`
-- `LOCAL_OPENAI_TIMEOUT_SEC`
+- `api_client.base_url`（默认 `http://127.0.0.1:8081`）
+- `api_client.timeout_sec`
+- `models.default_local_model`
 
 推荐在 RK3588 上按顺序启动：
 

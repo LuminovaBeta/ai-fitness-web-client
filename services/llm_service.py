@@ -1,5 +1,4 @@
 # services/llm_service.py
-import os
 import yaml
 import json
 import requests # 假设您通过 HTTP 调用本地部署的 vLLM / Ollama
@@ -17,9 +16,14 @@ def call_local_llm(prompt_text, max_tokens=150, temperature=0.7):
     通用大模型调用底座 (需根据您实际的本地推理服务 API 调整)
     此处以常见的 OpenAI 兼容接口为例
     """
-    url = os.getenv('LOCAL_OPENAI_BASE_URL', 'http://127.0.0.1:8081').rstrip('/') + '/v1/chat/completions'
-    model_name = os.getenv('LOCAL_OPENAI_MODEL', 'qwen2.5-3b-rk3588')
-    timeout_sec = int(os.getenv('LOCAL_OPENAI_TIMEOUT_SEC', '60'))
+    config = load_yaml() or {}
+    api_client_cfg = config.get('api_client', {})
+    models_cfg = config.get('models', {})
+
+    base_url = str(api_client_cfg.get('base_url', 'http://127.0.0.1:8081')).rstrip('/')
+    url = f"{base_url}/v1/chat/completions"
+    model_name = str(models_cfg.get('default_local_model', 'qwen2.5-3b-rk3588'))
+    timeout_sec = int(api_client_cfg.get('timeout_sec', 60))
     payload = {
         "model": model_name,
         "messages": [{"role": "user", "content": prompt_text}],
