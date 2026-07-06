@@ -710,7 +710,8 @@ class TrainFinishView(APIView):
                     
                     # 计划自动进化：覆写新的 JSON
                     new_plan = result_json.get('new_plan')
-                    if new_plan:
+                    # 仅按计划训练（GUIDED）才自动更新训练计划；自由训练只做总结
+                    if new_plan and training_mode == 'GUIDED':
                         TrainingPlan.objects.filter(user_id=user_id, is_active=True).update(is_active=False)
                         TrainingPlan.objects.create(
                             user_id=user_id,

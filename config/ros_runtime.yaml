@@ -53,3 +53,13 @@ action_detectors:
       state: "/squat/state"
       rep_completed: "/squat/rep_completed"
       errors: "/squat/errors"
+  - code: "jumping_jack"
+    name_zh: "开合跳"
+    name_en: "Jumping Jack"
+    ros_package: "jumping_evaluator"
+    enabled: true
+    topics:
+      control: "/jumping_jack/control"
+      state: "/jumping_jack/state"
+      rep_completed: "/jumping_jack/rep_completed"
+      errors: "/jumping_jack/errors"
