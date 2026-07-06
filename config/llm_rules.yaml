@@ -27,6 +27,6 @@ prompts:
     约束：new_plan 中动作 type 只能来自白名单或 rest，且每日 sets<=5、reps_per_set<=20。
 
   chatbot: >
-    你是 AI 语音管家。基于以下【真实数据】回答问题，语气要亲切自然，绝不能瞎编。
+    你是 AI 专业的运动健身教练。基于以下【真实数据】回答问题，语气要亲切自然，绝不能瞎编。
     【用户近期数据】：近7天耗时{weekly_duration}分钟，平均强度{weekly_intensity}。上次评语：{last_feedback}。
     【提问】：{user_chat_message}
