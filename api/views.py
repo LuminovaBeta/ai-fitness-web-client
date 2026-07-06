@@ -76,6 +76,139 @@ def _is_valid_plan_content(plan_content):
 
     return True
 
+
+def _parse_plan_json_from_llm_reply(llm_reply: str):
+    """尽量从 LLM 返回中提取可用 JSON，兼容 [JSON] / ```json 包裹。"""
+    text = (llm_reply or "").strip()
+    text = text.replace("```json", "").replace("```", "").strip()
+    text = re.sub(r"^\s*\[JSON\]\s*", "", text, flags=re.IGNORECASE)
+
+    # 优先尝试整段解析
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    # 回退：提取候选 JSON 片段并逐个尝试
+    candidates = re.findall(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except Exception:
+            continue
+
+    raise ValueError("大模型返回的内容中未找到可解析的 JSON")
+
+
+def _coerce_plan_content(plan_json):
+    """兼容模型返回 ['push_up','rest',...] 这类简化计划，转换为标准结构。"""
+    if isinstance(plan_json, list) and all(isinstance(x, str) for x in plan_json):
+        coerced = []
+        for idx, item in enumerate(plan_json[:7], start=1):
+            action = (item or "").strip().lower()
+            if action == "rest":
+                exercises = []
+            else:
+                exercises = [{
+                    "type": action,
+                    "sets": 3,
+                    "reps_per_set": 12,
+                    "rest_sec": 60,
+                }]
+            coerced.append({"day": idx, "exercises": exercises})
+        return coerced
+
+    return plan_json
+
+
+def _get_allowed_plan_exercise_codes() -> list[str]:
+    """获取计划生成允许的动作代码（不包含 rest）。"""
+    allowed: list[str] = []
+
+    # 1) 运行时动作字典（与前端可选项保持一致）
+    ros_cfg = getattr(settings, 'ROS_RUNTIME_CONFIG', {}) or {}
+    exercise_dict = ros_cfg.get('exercise_dictionary', []) if isinstance(ros_cfg, dict) else []
+    for item in exercise_dict:
+        if not isinstance(item, dict):
+            continue
+        code = _normalize_activity_code(item.get('code', ''))
+        if code and code != 'mixed_plan':
+            allowed.append(code)
+
+    # 2) 并入 Django 模型枚举（防止字典未覆盖全部动作）
+    for code, _ in Activity.ACTIVITY_TYPES:
+        n = _normalize_activity_code(code)
+        if n and n != 'mixed_plan':
+            allowed.append(n)
+
+    # 去重保序
+    return list(dict.fromkeys(allowed))
+
+
+def _sanitize_plan_content(plan_json, allowed_codes: list[str]):
+    """对计划结果做白名单过滤与字段规范化，避免写入不存在动作。"""
+    allowed_set = set(allowed_codes)
+    if not isinstance(plan_json, list):
+        return plan_json
+
+    sanitized = []
+    for idx, day_item in enumerate(plan_json, start=1):
+        if not isinstance(day_item, dict):
+            continue
+
+        day = _safe_int(day_item.get('day', idx), idx)
+        exercises_raw = day_item.get('exercises', [])
+        if not isinstance(exercises_raw, list):
+            exercises_raw = []
+
+        exercises = []
+        for ex in exercises_raw:
+            if not isinstance(ex, dict):
+                continue
+            ex_type = _normalize_activity_code(ex.get('type', ''))
+            if not ex_type or ex_type == 'rest':
+                continue
+            if ex_type not in allowed_set:
+                continue
+
+            sets = max(1, min(_safe_int(ex.get('sets', 3), 3), 5))
+            reps = max(1, min(_safe_int(ex.get('reps_per_set', ex.get('reps', 12)), 12), 20))
+            rest_sec = max(10, min(_safe_int(ex.get('rest_sec', 60), 60), 300))
+
+            exercises.append({
+                'type': ex_type,
+                'sets': sets,
+                'reps_per_set': reps,
+                'rest_sec': rest_sec,
+            })
+
+        sanitized.append({'day': day, 'exercises': exercises})
+
+    return sanitized
+
+
+def _sanitize_post_workout_result(result_json, allowed_codes: list[str]) -> dict:
+    """规范化训练后分析结果，避免异常字段污染存储。"""
+    if not isinstance(result_json, dict):
+        return {}
+
+    quality_score = max(1, min(_safe_int(result_json.get('quality_score', 5), 5), 10))
+    feedback_text = str(result_json.get('feedback_text', '干得很棒！')).strip() or '干得很棒！'
+
+    sanitized = {
+        'quality_score': quality_score,
+        'feedback_text': feedback_text,
+    }
+
+    new_plan = result_json.get('new_plan')
+    if new_plan is not None:
+        plan = _coerce_plan_content(new_plan)
+        plan = _sanitize_plan_content(plan, allowed_codes)
+        if _is_valid_plan_content(plan):
+            sanitized['new_plan'] = plan
+
+    return sanitized
+
 class RegisterView(APIView):
     """1. 基础注册接口 (POST) - 仅负责账号与身体档案初始化"""
     permission_classes = [AllowAny] # 注册接口无需鉴权
@@ -253,21 +386,25 @@ class GenerateInitialPlanView(APIView):
             # 1. 调度本地 LLM 运算
             config = load_yaml()
             prompt_template = config['prompts']['onboarding']
+            allowed_codes = _get_allowed_plan_exercise_codes()
+            allowed_text = ', '.join(allowed_codes + ['rest'])
             prompt = prompt_template.format(
                 gender=gender, 
                 height=height, 
                 weight=weight, 
                 user_goal_text=user_goal
             )
+            prompt += (
+                "\n\n仅可使用以下 type 作为动作："
+                f"{allowed_text}。"
+                "若为休息日，type 必须为 rest，且 exercises 置空数组。"
+                "严禁输出任何不在上述列表中的动作。"
+            )
             llm_reply = call_local_llm(prompt, max_tokens=300, temperature=0.2)
-            # 使用正则贪婪匹配提取第一个 { 或 [ 到最后一个 } 或 ] 之间的内容
-            match = re.search(r'(\{.*\}|\[.*\])', llm_reply, re.DOTALL)
-            
-            if not match:
-                raise ValueError("大模型返回的内容中未找到有效的 JSON 结构")
-                
-            clean_text = match.group(0)
-            plan_json = json.loads(clean_text)
+
+            plan_json = _parse_plan_json_from_llm_reply(llm_reply)
+            plan_json = _coerce_plan_content(plan_json)
+            plan_json = _sanitize_plan_content(plan_json, allowed_codes)
             if not _is_valid_plan_content(plan_json):
                 raise ValueError("训练计划结构非法")
 
@@ -650,11 +787,12 @@ class TrainFinishView(APIView):
     def post(self, request):
         user = request.user
         data = request.data
+        training_mode = _normalize_training_mode(data.get('training_mode', 'FREE'))
         
         # 1. 立即落盘宏观主表 Activity (原有逻辑保持不变)
         activity = Activity.objects.create(
             user=user,
-            training_mode=data.get('training_mode', 'FREE'),
+            training_mode=training_mode,
             activity_type=data.get('activity_type', 'mixed_plan'),
             duration=data.get('duration', 0),
             total_reps=data.get('total_reps', 0),
@@ -699,10 +837,13 @@ class TrainFinishView(APIView):
                     "min_spo2": min_spo2,     
                     "rpe_score": raw_data.get('perceived_exertion', 3)
                 }
+                allowed_codes = _get_allowed_plan_exercise_codes()
+                llm_payload['allowed_exercise_codes'] = allowed_codes
                 
                 # 3.3 生成反馈与新计划
                 result_json = generate_post_workout_feedback(llm_payload)
                 if result_json:
+                    result_json = _sanitize_post_workout_result(result_json, allowed_codes)
                     # 核心修复点：将大模型打出的评分更新回主表
                     new_score = result_json.get('quality_score', 5)
                     Activity.objects.filter(id=act_id).update(quality_score=new_score)
@@ -1429,9 +1570,12 @@ class TrainingSessionFinishView(APIView):
                     "avg_rest_hr": rest_hr_median,
                     "min_spo2": rest_spo2_median,
                 }
+                allowed_codes = _get_allowed_plan_exercise_codes()
+                llm_payload['allowed_exercise_codes'] = allowed_codes
 
                 result_json = generate_post_workout_feedback(llm_payload)
                 if result_json:
+                    result_json = _sanitize_post_workout_result(result_json, allowed_codes)
                     new_score = result_json.get('quality_score', 5)
                     Activity.objects.filter(id=act_id).update(quality_score=new_score)
 

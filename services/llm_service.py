@@ -1,6 +1,7 @@
 # services/llm_service.py
 import yaml
 import json
+import re
 import requests # 假设您通过 HTTP 调用本地部署的 vLLM / Ollama
 from django.conf import settings
 
@@ -58,6 +59,16 @@ def generate_post_workout_feedback(data_dict):
     try:
         # 清理 Markdown 代码块包裹
         clean_text = response_text.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_text)
-    except json.JSONDecodeError:
+        clean_text = re.sub(r"^\s*\[JSON\]\s*", "", clean_text, flags=re.IGNORECASE)
+        try:
+            return json.loads(clean_text)
+        except json.JSONDecodeError:
+            candidates = re.findall(r"(\{[\s\S]*\}|\[[\s\S]*\])", clean_text)
+            for candidate in candidates:
+                try:
+                    return json.loads(candidate)
+                except json.JSONDecodeError:
+                    continue
+            return None
+    except Exception:
         return None
