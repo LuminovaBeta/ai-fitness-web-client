@@ -18,6 +18,30 @@ pnpm install
 uv run manage.py runserver 0.0.0.0:8000
 ```
 
+## RK3588 本地 NPU（OpenAI 兼容）对接说明
+
+项目新增了 `web-ai-api/` 目录，用于将 `rkllm-ros2` 封装成 OpenAI 兼容接口：
+
+- `GET /v1/models`
+- `POST /v1/chat/completions`
+
+后端 `services/llm_service.py` 已改为优先调用本地 OpenAI 兼容服务，默认地址：
+
+- `LOCAL_OPENAI_BASE_URL=http://127.0.0.1:8080`
+
+可通过环境变量覆盖：
+
+- `LOCAL_OPENAI_BASE_URL`
+- `LOCAL_OPENAI_API_KEY`
+- `LOCAL_OPENAI_MODEL`
+- `LOCAL_OPENAI_TIMEOUT_SEC`
+
+推荐在 RK3588 上按顺序启动：
+
+1. `rkllm-ros2`（提供 ROS topic 推理能力）
+2. `web-ai-api`（OpenAI 兼容桥接层）
+3. Django 服务（业务后端）
+
 ## ✅ 当前后端实现进度（截至本次更新）
 
 ### 1) 数据模型新增与调整

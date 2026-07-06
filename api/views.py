@@ -1033,6 +1033,88 @@ class UserProfileView(APIView):
         }
         return Response(data, status=status.HTTP_200_OK)
 
+    def put(self, request):
+        user = request.user
+        profile = getattr(user, 'profile', None)
+        if profile is None:
+            profile = UserProfile.objects.create(user=user)
+
+        payload = request.data or {}
+
+        raw_phone = payload.get('phone', payload.get('mobile'))
+        if raw_phone is not None:
+            profile.phone = str(raw_phone).strip()
+
+        raw_avatar = payload.get('avatar')
+        if raw_avatar is not None:
+            profile.avatar = str(raw_avatar).strip()
+
+        raw_height = payload.get('height')
+        if raw_height is not None:
+            if str(raw_height).strip() == '':
+                profile.height = None
+            else:
+                height_val = _safe_float(raw_height, None)
+                if height_val is None or height_val < 80 or height_val > 260:
+                    return Response({"error": "身高范围应在 80-260 cm"}, status=status.HTTP_400_BAD_REQUEST)
+                profile.height = height_val
+
+        raw_weight = payload.get('weight')
+        if raw_weight is not None:
+            if str(raw_weight).strip() == '':
+                profile.weight = None
+            else:
+                weight_val = _safe_float(raw_weight, None)
+                if weight_val is None or weight_val < 20 or weight_val > 300:
+                    return Response({"error": "体重范围应在 20-300 kg"}, status=status.HTTP_400_BAD_REQUEST)
+                profile.weight = weight_val
+
+        raw_birthdate = payload.get('birthdate')
+        if raw_birthdate is not None:
+            birth_text = str(raw_birthdate).strip()
+            if birth_text == '':
+                profile.birthdate = None
+            else:
+                from datetime import datetime
+                try:
+                    parsed_date = datetime.strptime(birth_text, '%Y-%m-%d').date()
+                    profile.birthdate = parsed_date
+                except Exception:
+                    return Response({"error": "出生日期格式应为 YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
+
+        raw_gender = payload.get('gender')
+        if raw_gender is not None:
+            normalized_gender = str(raw_gender).strip().upper()
+            if normalized_gender in ['男', 'M']:
+                profile.gender = 'M'
+            elif normalized_gender in ['女', 'F']:
+                profile.gender = 'F'
+            elif normalized_gender in ['', 'O', '其他']:
+                profile.gender = 'O'
+            else:
+                return Response({"error": "性别仅支持 男/女"}, status=status.HTTP_400_BAD_REQUEST)
+
+        profile.save()
+
+        if profile.gender == 'M':
+            gender_text = '男'
+        elif profile.gender == 'F':
+            gender_text = '女'
+        else:
+            gender_text = ''
+
+        data = {
+            "username": user.username,
+            "phone": profile.phone or '',
+            "role": "管理员" if user.is_staff else "普通用户",
+            "avatar": profile.avatar or '',
+            "gender": gender_text,
+            "height": profile.height,
+            "weight": profile.weight,
+            "birthdate": profile.birthdate.isoformat() if getattr(profile, 'birthdate', None) else ''
+        }
+        return Response({"msg": "资料更新成功", **data}, status=status.HTTP_200_OK)
+
 
 class TrainingSessionStartView(APIView):
     """A2) 开始训练会话（新增）"""

@@ -1,6 +1,8 @@
 # services/llm_service.py
+import os
 import yaml
 import json
+import requests # 假设您通过 HTTP 调用本地部署的 vLLM / Ollama
 from django.conf import settings
 
 # 加载配置
@@ -12,49 +14,46 @@ def load_yaml():
 
 def call_local_llm(prompt_text, max_tokens=150, temperature=0.7):
     """
-    [Windows Mock 版] 不发网络请求，直接返回假结果
+    通用大模型调用底座 (需根据您实际的本地推理服务 API 调整)
+    此处以常见的 OpenAI 兼容接口为例
     """
-    print(f"\n--- [LLM Mock 被调用] ---")
-    
-    # 1. 拦截“初始化计划生成” (寻找 Prompt 中的关键字，如"纯JSON数组" 或 "7天的训练计划")
-    if "纯JSON数组" in prompt_text or "```json" in prompt_text or "JSON" in prompt_text:
-        print("-> 触发 [初始化计划] Mock")
-        return """
-        ```json
-        [
-          {
-            "day": 1,
-            "exercises": [
-              {"type": "squat", "sets": 3, "reps_per_set": 15, "rest_sec": 60},
-              {"type": "push_up", "sets": 3, "reps_per_set": 10, "rest_sec": 45}
-            ]
-          }
-        ]
-        ```
-        """
-    
-    # 2. 拦截“私教问答 Chatbot”
-    print("-> 触发 [聊天/微指导] Mock")
-    return "您的数据看起来非常健康！继续保持每天锻炼的好习惯哦。"
+    url = os.getenv('LOCAL_OPENAI_BASE_URL', 'http://127.0.0.1:8081').rstrip('/') + '/v1/chat/completions'
+    model_name = os.getenv('LOCAL_OPENAI_MODEL', 'qwen2.5-3b-rk3588')
+    timeout_sec = int(os.getenv('LOCAL_OPENAI_TIMEOUT_SEC', '60'))
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": prompt_text}],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stream": False,
+    }
+    try:
+        # 本地开发可先用假数据 Mock 避免环境卡壳
+        # return "做得很棒！但注意膝盖不要内扣，继续保持！" 
+        print(f"[LLM REQUEST] url={url} payload={json.dumps(payload, ensure_ascii=False)}")
+        response = requests.post(url, json=payload, timeout=timeout_sec)
+        print(f"[LLM RAW RESPONSE] status={response.status_code} body={response.text}")
+        response.raise_for_status()
+        return response.json()['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        print(f"LLM Error: {e}")
+        return "加油，继续保持！" # 降级回复
 
 def generate_micro_coaching(activity_type, error_text):
-    return "假装这是一句纠正：注意核心收紧，稳住重心！"
+    config = load_yaml()
+    prompt = config['prompts']['micro_coaching'].format(
+        activity_type=activity_type,
+        error_text=error_text
+    )
+    return call_local_llm(prompt, max_tokens=50, temperature=0.7)
 
 def generate_post_workout_feedback(data_dict):
-    """
-    [Windows Mock 版] 固定运动后的后台 JSON 分析报告
-    """
-    print(f"\n--- [LLM Mock 运动结算后台分析开启] --- \n入参: {data_dict}")
-    # 返回符合要求（包含 quality_score, feedback_text, new_plan）的合法字典
-    return {
-        "quality_score": 9,
-        "feedback_text": "这是一段 Mock 评语：今天完成得很棒！心跳和血氧控制得非常好。",
-        "new_plan": [
-            {
-            "day": 1,
-            "exercises": [
-                {"type": "squat", "sets": 4, "reps_per_set": 20, "rest_interval_sec": 45}
-            ]
-            }
-        ]
-    }
+    config = load_yaml()
+    prompt = config['prompts']['post_workout'].format(**data_dict)
+    response_text = call_local_llm(prompt, max_tokens=500, temperature=0.3)
+    try:
+        # 清理 Markdown 代码块包裹
+        clean_text = response_text.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_text)
+    except json.JSONDecodeError:
+        return None
