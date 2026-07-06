@@ -1056,7 +1056,8 @@ class TrainingSessionStateView(APIView):
 
         relay_state = get_session_realtime(session_id, ttl_sec=relay_ttl_sec)
         has_relay_state = bool(relay_state)
-        prefer_relay = source_mode == 'client_relay'
+        # 仅当配置显式为 simulated 才走模拟；其余场景只要有实时回传就优先使用
+        prefer_relay = source_mode != 'simulated'
 
         if session.status == 'FINISHED':
             final_hr = _safe_int(relay_state.get('heart_rate'), 90) if has_relay_state else 90
@@ -1116,6 +1117,13 @@ class TrainingSessionStateView(APIView):
                 progress = round(max(0.0, min(100.0, relay_progress)), 1)
 
             coach_message = str(relay_state.get('coach_message') or coach_message)
+
+        # 防止计数回退：会话存储一个单调不减的 final_reps 水位
+        if current_rep < session.final_reps:
+            current_rep = session.final_reps
+        elif current_rep > session.final_reps:
+            session.final_reps = current_rep
+            session.save(update_fields=['final_reps'])
 
         if session.phase != phase:
             session.phase = phase
@@ -1353,4 +1361,10 @@ class TrainingSessionRealtimeIngestView(APIView):
             payload["phase"] = session.phase or 'WORK'
 
         upsert_session_realtime(session_id, payload)
+
+        # 将实时上报的最新进度固化到会话，避免轮询端出现回跳
+        if payload["current_rep"] > session.final_reps:
+            session.final_reps = payload["current_rep"]
+            session.save(update_fields=['final_reps'])
+
         return Response({"msg": "实时状态已接收"}, status=status.HTTP_200_OK)
