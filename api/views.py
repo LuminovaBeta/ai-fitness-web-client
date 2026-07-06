@@ -81,7 +81,7 @@ def _parse_plan_json_from_llm_reply(llm_reply: str):
     """尽量从 LLM 返回中提取可用 JSON，兼容 [JSON] / ```json 包裹。"""
     text = (llm_reply or "").strip()
     text = text.replace("```json", "").replace("```", "").strip()
-    text = re.sub(r"^\s*\[JSON\]\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^\s*\[[A-Z_]+\]\s*", "", text, flags=re.IGNORECASE)
 
     # 优先尝试整段解析
     try:
@@ -96,6 +96,17 @@ def _parse_plan_json_from_llm_reply(llm_reply: str):
             return json.loads(candidate)
         except Exception:
             continue
+
+    # 最后兜底：从非标准/截断文本里提取 type 列表
+    type_candidates = re.findall(r'"type"\s*:\s*"([^"]+)"', text)
+    if type_candidates:
+        actions = []
+        for raw in type_candidates:
+            code = _normalize_activity_code(raw)
+            if code:
+                actions.append(code)
+        if actions:
+            return actions
 
     raise ValueError("大模型返回的内容中未找到可解析的 JSON")
 
@@ -399,8 +410,9 @@ class GenerateInitialPlanView(APIView):
                 f"{allowed_text}。"
                 "若为休息日，type 必须为 rest，且 exercises 置空数组。"
                 "严禁输出任何不在上述列表中的动作。"
+                "输出必须是7天数组，每天仅包含 day 和 exercises 两个键，禁止额外外层键，禁止重复键。"
             )
-            llm_reply = call_local_llm(prompt, max_tokens=300, temperature=0.2)
+            llm_reply = call_local_llm(prompt, max_tokens=900, temperature=0.2)
 
             plan_json = _parse_plan_json_from_llm_reply(llm_reply)
             plan_json = _coerce_plan_content(plan_json)
@@ -1063,10 +1075,16 @@ def _normalize_activity_code(activity_code: str) -> str:
     code = str(activity_code or '').strip().lower()
     alias_map = {
         'pushup': 'push_up',
+        'pushups': 'push_up',
+        'push_ups': 'push_up',
         'push-up': 'push_up',
         'push up': 'push_up',
         'jumpingjack': 'jumping_jack',
+        'jumpingjacks': 'jumping_jack',
         'jumping-jack': 'jumping_jack',
+        'lunges': 'lunge',
+        'squats': 'squat',
+        'planks': 'plank',
         'mix_plan': 'mixed_plan',
         'mixed': 'mixed_plan',
     }
