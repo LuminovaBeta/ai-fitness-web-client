@@ -402,11 +402,10 @@ class FaceEnrollView(APIView):
             face_record.embedding = face_embedding
             face_record.save()
 
-        play_tts_sync("人脸特征录入成功")
-        
         return Response({
             "code": "ENROLL_SUCCESS",
-            "msg": "人脸特征绑定成功，已与当前身体档案互联"
+            "msg": "人脸特征绑定成功，已与当前身体档案互联",
+            "tts_text": "人脸特征录入成功"
         }, status=status.HTTP_201_CREATED)
         
 
@@ -846,10 +845,7 @@ class MicroCoachView(APIView):
         # 1. 请求本地 LLM 生成短评
         coach_words = generate_micro_coaching(activity_type, error_text)
         
-        # 2. 直接调用系统底层发声 (不经过前端音频标签)
-        play_tts_sync(coach_words)
-        
-        return Response({"spoken_text": coach_words}, status=status.HTTP_200_OK)
+        return Response({"spoken_text": coach_words, "tts_text": coach_words}, status=status.HTTP_200_OK)
 
 class TrainFinishView(APIView):
     """训练核心中枢结算接口 (POST)"""
@@ -949,8 +945,11 @@ class TrainFinishView(APIView):
         thread = threading.Thread(target=background_llm_task, args=(activity.id, user.id, data))
         thread.start()
 
-        play_tts_sync("数据已经保存，AI正在为您生成分析报告，请稍候。")
-        return Response({"msg": "数据已保存，AI后台分析中", "activity_id": activity.id}, status=status.HTTP_202_ACCEPTED)
+        return Response({
+            "msg": "数据已保存，AI后台分析中",
+            "activity_id": activity.id,
+            "tts_text": "数据已经保存，AI正在为您生成分析报告，请稍候。"
+        }, status=status.HTTP_202_ACCEPTED)
 
 class ChatbotView(APIView):
     """
@@ -1031,12 +1030,10 @@ class ChatbotView(APIView):
         # 5. 调用本地轻量化大模型进行安全推理
         reply_text = call_local_llm(final_prompt, max_tokens=150, temperature=0.6)
         
-        # 6. 一体机工业级发声体验：调用底层 Linux 物理声道进行同步非阻塞语音播报，拒绝网页感
-        play_tts_sync(reply_text)
-        
-        # 7. 将文本结果同时返回给前端用于 Kiosk 屏幕上气泡的渲染
+        # 6. 返回文本结果，由前端统一调 TTS 接口进行播报，保证动画时长一致
         return Response({
             "reply": reply_text,
+            "tts_text": reply_text,
             "rag_meta": {
                 "injected_duration_mins": weekly_duration,
                 "injected_intensity": weekly_intensity
