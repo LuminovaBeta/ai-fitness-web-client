@@ -46,6 +46,8 @@ class Activity(models.Model):
     ACTIVITY_TYPES = (
         ('squat', '深蹲 (Squat)'),
         ('lunge', '弓箭步 (Lunge)'), 
+        ('jumping_jack', '开合跳 (Jumping Jack)'),
+        ('pushup', '俯卧撑 (Push-up)'),
         ('push_up', '俯卧撑 (Push-up)'),
         ('plank', '平板支撑 (Plank)'),
         ('mixed_plan', '混合计划 (引导模式)'),

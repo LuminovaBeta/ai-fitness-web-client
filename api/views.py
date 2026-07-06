@@ -317,9 +317,11 @@ class ActivityListView(APIView):
         # 构造精简的 JSON 列表结构返回给前端
         data = []
         for act in activities:
+            normalized_type = _normalize_activity_code(act.activity_type)
             data.append({
                 "id": act.id,
-                "activity_type": act.activity_type,
+                "activity_type": normalized_type,
+                "activity_name": _activity_display_name_zh(normalized_type),
                 "start_time": act.start_time.strftime('%Y-%m-%d %H:%M:%S'),
                 "duration": act.duration,
                 "total_reps": act.total_reps,
@@ -343,9 +345,11 @@ class ActivityDetailView(APIView):
             return Response({"error": "未找到该条训练记录，或无权访问"}, status=status.HTTP_404_NOT_FOUND)
             
         # 1. 提取基础宏观数据
+        normalized_type = _normalize_activity_code(activity.activity_type)
         data = {
             "id": activity.id,
-            "activity_type": activity.get_activity_type_display(),
+            "activity_type": normalized_type,
+            "activity_name": _activity_display_name_zh(normalized_type),
             "training_mode": activity.get_training_mode_display(),
             "start_time": activity.start_time.strftime('%Y-%m-%d %H:%M:%S'),
             "duration_seconds": activity.duration,
@@ -572,11 +576,12 @@ class DashboardView(APIView):
                     total_target_reps += ex_target
                     
                     # 聚合今天这个特定动作实际做了多少次
-                    ex_type = ex.get('type', '')
+                    ex_type_raw = ex.get('type', '')
+                    ex_type = _normalize_activity_code(ex_type_raw)
                     if not ex_type:
                         continue
 
-                    ex_actual_agg = today_activities.filter(activity_type=ex_type).aggregate(total=Sum('total_reps'))
+                    ex_actual_agg = today_activities.filter(activity_type__in=_activity_code_aliases(ex_type)).aggregate(total=Sum('total_reps'))
                     ex_actual = ex_actual_agg['total'] or 0
                     
                     # 为了防止超额完成导致进度条爆表超过 100%，做个封顶限制
@@ -588,6 +593,7 @@ class DashboardView(APIView):
                     # 组装给前端展示的详情列表
                     today_exercises.append({
                         "type": ex_type,
+                        "name": _activity_display_name_zh(ex_type),
                         "target": ex_target,
                         "actual": ex_actual,
                         "is_done": ex_actual >= ex_target,
@@ -912,6 +918,48 @@ def _normalize_intensity(intensity_value: str) -> str:
     return intensity_map.get(intensity_value, 'MED')
 
 
+def _normalize_activity_code(activity_code: str) -> str:
+    code = str(activity_code or '').strip().lower()
+    alias_map = {
+        'pushup': 'push_up',
+        'push-up': 'push_up',
+        'push up': 'push_up',
+        'jumpingjack': 'jumping_jack',
+        'jumping-jack': 'jumping_jack',
+        'mix_plan': 'mixed_plan',
+        'mixed': 'mixed_plan',
+    }
+    return alias_map.get(code, code)
+
+
+def _activity_code_aliases(activity_code: str) -> list[str]:
+    normalized = _normalize_activity_code(activity_code)
+    alias_table = {
+        'push_up': ['push_up', 'pushup'],
+        'jumping_jack': ['jumping_jack', 'jumpingjack'],
+        'mixed_plan': ['mixed_plan', 'mix_plan', 'mixed'],
+    }
+    aliases = alias_table.get(normalized, [normalized])
+    # 去重并保持顺序
+    return list(dict.fromkeys(aliases))
+
+
+def _activity_display_name_zh(activity_code: str) -> str:
+    code = _normalize_activity_code(activity_code)
+
+    # 优先使用 ros_runtime.yaml 中的动作字典
+    ros_cfg = getattr(settings, 'ROS_RUNTIME_CONFIG', {}) or {}
+    exercise_dict = ros_cfg.get('exercise_dictionary', []) if isinstance(ros_cfg, dict) else []
+    for item in exercise_dict:
+        if str(item.get('code', '')).strip() == code:
+            return str(item.get('name_zh') or item.get('name') or code)
+
+    # 回退到 Django 枚举文案（取中文部分）
+    label_map = {item_code: label for item_code, label in Activity.ACTIVITY_TYPES}
+    raw_label = str(label_map.get(code, code))
+    return raw_label.split('(')[0].strip() or code
+
+
 def _safe_int(value, default_value):
     if isinstance(value, (list, tuple)):
         value = value[0] if value else default_value
@@ -993,7 +1041,8 @@ class TrainingSessionStartView(APIView):
     def post(self, request):
         data = request.data
         mode = str(data.get('mode', 'free')).lower()
-        exercises = data.get('exercises', [])
+        exercises_raw = data.get('exercises', [])
+        exercises = [_normalize_activity_code(item) for item in exercises_raw if str(item or '').strip()]
         sets_raw = _pick_first_non_empty(data, ['sets', 'total_sets', 'set_count', 'setCount'], 1)
         reps_raw = _pick_first_non_empty(data, ['reps', 'reps_per_set', 'rep_count', 'repCount'], 1)
         rest_raw = _pick_first_non_empty(data, ['restSec', 'rest_sec', 'rest_seconds', 'restSeconds'], 45)
@@ -1003,7 +1052,7 @@ class TrainingSessionStartView(APIView):
         rest_sec = max(1, _safe_int(rest_raw, 45))
         intensity = str(data.get('intensity', 'medium')).lower()
 
-        if not isinstance(exercises, list) or len(exercises) == 0:
+        if len(exercises) == 0:
             return Response({"error": "exercises 必须为非空数组"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_id = f"sess_{timezone.now().strftime('%Y%m%d')}_{uuid4().hex[:8]}"
@@ -1186,7 +1235,7 @@ class TrainingSessionFinishView(APIView):
 
         training_mode = _normalize_training_mode(session.mode)
         normalized_intensity = _normalize_intensity(session.intensity)
-        exercises = session.exercises or []
+        exercises = [_normalize_activity_code(item) for item in (session.exercises or []) if str(item or '').strip()]
         if len(exercises) == 1:
             activity_type = exercises[0]
         elif len(exercises) > 1:
