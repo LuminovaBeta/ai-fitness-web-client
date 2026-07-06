@@ -725,7 +725,10 @@ class DashboardView(APIView):
                 plan_json = []
 
             today_plan = next(
-                (day for day in plan_json if isinstance(day, dict) and day.get('day') == current_day_num),
+                (
+                    day for day in plan_json
+                    if isinstance(day, dict) and _safe_int(day.get('day'), 0) == current_day_num
+                ),
                 None
             )
             
