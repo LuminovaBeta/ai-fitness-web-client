@@ -1034,6 +1034,7 @@ class TrainingSessionStartView(APIView):
         return Response({
             "session_id": session_id,
             "msg": "训练会话创建成功",
+            "exercises": session.exercises,
             "sets": session.sets,
             "reps": session.reps,
             "rest_sec": session.rest_sec,
@@ -1068,6 +1069,7 @@ class TrainingSessionStateView(APIView):
                 "session_id": session_id,
                 "status": "FINISHED",
                 "phase": "END",
+                "exercises": session.exercises or [],
                 "heart_rate": final_hr,
                 "spo2": final_spo2,
                 "current_rep": session.final_reps,
@@ -1134,6 +1136,7 @@ class TrainingSessionStateView(APIView):
             "session_id": session_id,
             "status": "RUNNING",
             "phase": phase,
+            "exercises": session.exercises or [],
             "heart_rate": heart_rate,
             "spo2": spo2,
             "current_rep": current_rep,

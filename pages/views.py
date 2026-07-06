@@ -16,6 +16,8 @@ def live_monitoring(request):
             'debug_mode': bool(ros_cfg.get('debug_mode', False)),
             'active_profile': ros_cfg.get('active_profile', {}),
             'topics': ros_cfg.get('topics', {}),
+            'action_detectors': ros_cfg.get('enabled_action_detectors', []),
+            'exercise_dictionary': ros_cfg.get('exercise_dictionary', []),
         }
     }
     return render(request, 'live_monitoring.html', context)

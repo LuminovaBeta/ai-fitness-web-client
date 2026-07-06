@@ -145,9 +145,9 @@
                 <h3 class="card-title"><el-icon style="color: #8b5cf6;"><set-up></set-up></el-icon> 动作模式加载</h3>
             </div>
             <select class="action-selector" v-model="selectedAction">
-                <option value="squat">深蹲 (Squat)</option>
-                <option value="pushup">俯卧撑 (Push-up)</option>
-                <option value="plank">平板支撑 (Plank)</option>
+                <option v-for="item in actionOptions" :key="item.code" :value="item.code">
+                    [[ item.name_zh || item.name || item.code ]]
+                </option>
             </select>
             <el-button @click="loadModel" type="primary" style="margin-top: 12px; width: 100%;">加载评估模型</el-button>
         </div>
@@ -221,7 +221,11 @@
             const rosRuntime = window.ROS_RUNTIME || {};
             const profile = rosRuntime.active_profile || {};
             const topics = rosRuntime.topics || {};
-            const squat = topics.squat || {};
+            const actionDetectors = Array.isArray(rosRuntime.action_detectors) ? rosRuntime.action_detectors : [];
+            const exerciseDictionary = Array.isArray(rosRuntime.exercise_dictionary) ? rosRuntime.exercise_dictionary : [];
+            const defaultDetector = actionDetectors[0] || {};
+            const defaultDetectorTopics = defaultDetector.topics || topics.squat || {};
+            const defaultActionCode = String(defaultDetector.code || (exerciseDictionary[0] && exerciseDictionary[0].code) || '').trim();
             const heart = topics.heart || {};
             const llm = topics.llm || {};
 
@@ -230,7 +234,9 @@
                 isConnected: false,
                 currentPhase: '等待检测...', 
                 squatCount: 0,
-                selectedAction: 'squat', 
+                selectedAction: defaultActionCode,
+                actionOptions: exerciseDictionary,
+                actionDetectors,
                 bleEnabled: true,
                 controlTopic: null,
                 
@@ -250,11 +256,11 @@
                 videoStreamUrl: profile.mjpeg_stream_url || 'http://127.0.0.1:8080/stream?topic=/pose/image&type=mjpeg',
                 reconnectDelayMs: profile.reconnect_delay_ms || 3000,
 
-                topicControl: squat.control || '/squat/control',
+                topicControl: defaultDetectorTopics.control || '',
                 topicPoseImage: topics.pose_image || '/pose/image',
-                topicState: squat.state || '/squat/state',
-                topicRepCompleted: squat.rep_completed || '/squat/rep_completed',
-                topicErrors: squat.errors || '/squat/errors',
+                topicState: defaultDetectorTopics.state || '',
+                topicRepCompleted: defaultDetectorTopics.rep_completed || '',
+                topicErrors: defaultDetectorTopics.errors || '',
                 topicHeartRate: heart.heart_rate || '/heart_sensor_node/heart_rate',
                 topicSpo2: heart.spo2 || '/heart_sensor_node/spo2',
                 topicPacketLoss: heart.packet_loss || '/heart_sensor_node/packet_loss',
@@ -271,6 +277,20 @@
             if(this.timerId) clearInterval(this.timerId); // 清除计时器释放内存
         },
         methods: {
+            resolveDetectorByCode(code) {
+                const key = String(code || '').trim();
+                return this.actionDetectors.find((item) => String(item?.code || '') === key) || null;
+            },
+
+            applyDetectorTopics(code) {
+                const detector = this.resolveDetectorByCode(code);
+                const detectorTopics = detector?.topics || {};
+                this.topicControl = String(detectorTopics.control || '').trim();
+                this.topicState = String(detectorTopics.state || '').trim();
+                this.topicRepCompleted = String(detectorTopics.rep_completed || '').trim();
+                this.topicErrors = String(detectorTopics.errors || '').trim();
+            },
+
             updateVideoStreamSrc() {
                 const feed = document.getElementById('ai-video-feed');
                 if (feed) {
@@ -301,6 +321,10 @@
             },
 
             setupPublishers() {
+                if (!this.topicControl) {
+                    this.writeToTerminal('ERROR', '当前动作 control 话题为空，请检查 ros_runtime.yaml');
+                    return;
+                }
                 this.controlTopic = new ROSLIB.Topic({
                     ros : this.ros,
                     name : this.topicControl,
@@ -310,6 +334,11 @@
 
             // 订阅数据
             subscribeTopics() {
+                if (!this.topicState || !this.topicRepCompleted || !this.topicErrors) {
+                    this.writeToTerminal('ERROR', '当前动作订阅话题不完整，请检查 ros_runtime.yaml');
+                    return;
+                }
+
                 const stateTopic = new ROSLIB.Topic({ ros: this.ros, name: this.topicState, messageType: 'std_msgs/msg/String' });
                 stateTopic.subscribe((message) => { try { this.currentPhase = JSON.parse(message.data).msg; } catch(e){} });
 
@@ -373,11 +402,13 @@
 
             // 🌟 辅助方法：将下拉框 value 转为中文名
             getActionName(code) {
-                const map = { 'squat': '深蹲', 'pushup': '俯卧撑', 'plank': '平板支撑' };
-                return map[code] || code;
+                const key = String(code || '').trim();
+                const matched = this.actionOptions.find((item) => String(item?.code || '') === key);
+                return matched?.name_zh || matched?.name || key;
             },
 
             loadModel() {
+                this.applyDetectorTopics(this.selectedAction);
                 this.writeToTerminal('INFO', `正在加载 ${this.selectedAction} 检测模型...`);
             },
             
@@ -410,6 +441,16 @@
                 if(this.timerId) {
                     clearInterval(this.timerId);
                     this.timerId = null;
+                }
+            }
+        },
+        watch: {
+            selectedAction(newVal) {
+                this.applyDetectorTopics(newVal);
+                this.controlTopic = null;
+                if (this.isConnected) {
+                    this.setupPublishers();
+                    this.writeToTerminal('INFO', `已切换动作模式: ${this.getActionName(newVal)}`);
                 }
             }
         }
