@@ -452,13 +452,29 @@ class GenerateInitialPlanView(APIView):
                 "严禁输出任何不在上述列表中的动作。"
                 "输出必须是7天数组，每天仅包含 day 和 exercises 两个键，禁止额外外层键，禁止重复键。"
             )
-            llm_reply = call_local_llm(prompt, max_tokens=900, temperature=0.2)
+            plan_json = None
+            last_parse_err = None
+            for attempt in range(1, 4):
+                llm_reply = call_local_llm(prompt, max_tokens=900, temperature=0.2)
+                try:
+                    parsed = _parse_plan_json_from_llm_reply(llm_reply)
+                    parsed = _coerce_plan_content(parsed)
+                    parsed = _sanitize_plan_content(parsed, allowed_codes)
+                    if not _is_valid_plan_content(parsed):
+                        raise ValueError("训练计划结构非法")
+                    plan_json = parsed
+                    break
+                except Exception as parse_err:
+                    last_parse_err = parse_err
+                    logger.warning(
+                        "初始化训练计划解析失败，准备重试: user_id=%s, attempt=%s/3, err=%s",
+                        user.id,
+                        attempt,
+                        str(parse_err),
+                    )
 
-            plan_json = _parse_plan_json_from_llm_reply(llm_reply)
-            plan_json = _coerce_plan_content(plan_json)
-            plan_json = _sanitize_plan_content(plan_json, allowed_codes)
-            if not _is_valid_plan_content(plan_json):
-                raise ValueError("训练计划结构非法")
+            if plan_json is None:
+                raise ValueError(f"训练计划解析连续3次失败: {last_parse_err}")
 
             # 3. 计划落盘 (保持不变)
             TrainingPlan.objects.filter(user=user, is_active=True).update(is_active=False)
