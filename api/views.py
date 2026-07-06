@@ -912,10 +912,26 @@ def _normalize_intensity(intensity_value: str) -> str:
 
 
 def _safe_int(value, default_value):
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else default_value
     try:
         return int(value)
     except (TypeError, ValueError):
-        return default_value
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default_value
+
+
+def _pick_first_non_empty(data: dict, keys: list[str], default_value=None):
+    for key in keys:
+        value = data.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and value.strip() == '':
+            continue
+        return value
+    return default_value
 
 
 def _safe_float(value, default_value=None):
@@ -977,9 +993,13 @@ class TrainingSessionStartView(APIView):
         data = request.data
         mode = str(data.get('mode', 'free')).lower()
         exercises = data.get('exercises', [])
-        sets = _safe_int(data.get('sets', 1), 1)
-        reps = _safe_int(data.get('reps', 1), 1)
-        rest_sec = _safe_int(data.get('restSec', 45), 45)
+        sets_raw = _pick_first_non_empty(data, ['sets', 'total_sets', 'set_count', 'setCount'], 1)
+        reps_raw = _pick_first_non_empty(data, ['reps', 'reps_per_set', 'rep_count', 'repCount'], 1)
+        rest_raw = _pick_first_non_empty(data, ['restSec', 'rest_sec', 'rest_seconds', 'restSeconds'], 45)
+
+        sets = max(1, _safe_int(sets_raw, 1))
+        reps = max(1, _safe_int(reps_raw, 1))
+        rest_sec = max(1, _safe_int(rest_raw, 45))
         intensity = str(data.get('intensity', 'medium')).lower()
 
         if not isinstance(exercises, list) or len(exercises) == 0:
@@ -987,22 +1007,36 @@ class TrainingSessionStartView(APIView):
 
         session_id = f"sess_{timezone.now().strftime('%Y%m%d')}_{uuid4().hex[:8]}"
 
-        TrainingSession.objects.create(
+        session = TrainingSession.objects.create(
             user=request.user,
             session_id=session_id,
             mode=mode,
             exercises=exercises,
-            sets=max(1, sets),
-            reps=max(1, reps),
-            rest_sec=max(1, rest_sec),
+            sets=sets,
+            reps=reps,
+            rest_sec=rest_sec,
             intensity=intensity,
             status='RUNNING',
             phase='WORK'
         )
 
+        logger.info(
+            "[TrainingSessionStart] session=%s user=%s mode=%s sets=%s reps=%s rest_sec=%s",
+            session_id,
+            request.user.id,
+            mode,
+            session.sets,
+            session.reps,
+            session.rest_sec,
+        )
+
         return Response({
             "session_id": session_id,
-            "msg": "训练会话创建成功"
+            "msg": "训练会话创建成功",
+            "sets": session.sets,
+            "reps": session.reps,
+            "rest_sec": session.rest_sec,
+            "target_reps": session.sets * session.reps,
         }, status=status.HTTP_200_OK)
 
 
@@ -1094,6 +1128,7 @@ class TrainingSessionStateView(APIView):
             "heart_rate": heart_rate,
             "spo2": spo2,
             "current_rep": current_rep,
+            "reps_per_set": session.reps,
             "target_reps": target_reps,
             "current_set": current_set,
             "total_sets": session.sets,
