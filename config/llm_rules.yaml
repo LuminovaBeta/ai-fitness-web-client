@@ -5,7 +5,7 @@ models:
 
 api_client:
   base_url: "http://127.0.0.1:8081"
-  timeout_sec: 60
+  timeout_sec: 180
 
 prompts:
   onboarding: >
