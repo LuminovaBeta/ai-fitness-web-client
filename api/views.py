@@ -97,6 +97,38 @@ def _parse_plan_json_from_llm_reply(llm_reply: str):
         except Exception:
             continue
 
+    # 兼容逐行伪 JSON 格式：
+    # ["day": "1", "exercises": ["squat"]]
+    line_pattern = re.compile(
+        r'\[\s*"day"\s*:\s*"?(\d+)"?\s*,\s*"exercises"\s*:\s*\[([^\]]*)\]\s*\]',
+        flags=re.IGNORECASE,
+    )
+    line_matches = line_pattern.findall(text)
+    if line_matches:
+        parsed_days = []
+        for day_raw, exercises_raw in line_matches:
+            day_num = _safe_int(day_raw, len(parsed_days) + 1)
+            items = re.findall(r'"([^"]+)"', exercises_raw)
+            exercises = []
+            for item in items:
+                code = _normalize_activity_code(item)
+                if code == 'rest':
+                    exercises = []
+                    break
+                if code:
+                    exercises.append({
+                        'type': code,
+                        'sets': 3,
+                        'reps_per_set': 12,
+                        'rest_sec': 60,
+                    })
+            parsed_days.append({
+                'day': day_num,
+                'exercises': exercises,
+            })
+        if parsed_days:
+            return parsed_days
+
     # 最后兜底：从非标准/截断文本里提取 type 列表
     type_candidates = re.findall(r'"type"\s*:\s*"([^"]+)"', text)
     if type_candidates:
