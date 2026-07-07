@@ -12,6 +12,7 @@ dependencies = [
     "djangorestframework-simplejwt>=5.5.1",
     "edge-tts>=7.2.8",
     "insightface>=1.0.1",
+    "json-repair>=0.30.3",
     "mutagen>=1.48.1",
     "numpy>=2.4.6",
     "onnxruntime>=1.27.0",

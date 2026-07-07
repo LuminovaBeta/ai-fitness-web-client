@@ -5,6 +5,10 @@ import re
 import requests # 假设您通过 HTTP 调用本地部署的 vLLM / Ollama
 from django.conf import settings
 
+
+class LocalLLMError(RuntimeError):
+    """本地 LLM 服务调用失败或响应结构异常。"""
+
 # 加载配置
 YAML_PATH = settings.BASE_DIR / 'config' / 'llm_rules.yaml'
 
@@ -12,7 +16,7 @@ def load_yaml():
     with open(YAML_PATH, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
-def call_local_llm(prompt_text, max_tokens=150, temperature=0.7):
+def call_local_llm(prompt_text, max_tokens=150, temperature=0.7, system_prompt=None, raise_on_error=False):
     """
     通用大模型调用底座 (需根据您实际的本地推理服务 API 调整)
     此处以常见的 OpenAI 兼容接口为例
@@ -25,9 +29,14 @@ def call_local_llm(prompt_text, max_tokens=150, temperature=0.7):
     url = f"{base_url}/v1/chat/completions"
     model_name = str(models_cfg.get('default_local_model', 'qwen2.5-3b-rk3588'))
     timeout_sec = int(api_client_cfg.get('timeout_sec', 60))
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": str(system_prompt)})
+    messages.append({"role": "user", "content": prompt_text})
+
     payload = {
         "model": model_name,
-        "messages": [{"role": "user", "content": prompt_text}],
+        "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": False,
@@ -39,9 +48,17 @@ def call_local_llm(prompt_text, max_tokens=150, temperature=0.7):
         response = requests.post(url, json=payload, timeout=timeout_sec)
         print(f"[LLM RAW RESPONSE] status={response.status_code} body={response.text}")
         response.raise_for_status()
-        return response.json()['choices'][0]['message']['content'].strip()
+        data = response.json()
+        content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+        if not isinstance(content, str) or not content.strip():
+            raise LocalLLMError(f"LLM 响应缺少有效 content: {data}")
+        return content.strip()
     except Exception as e:
         print(f"LLM Error: {e}")
+        if raise_on_error:
+            if isinstance(e, LocalLLMError):
+                raise
+            raise LocalLLMError(str(e)) from e
         return "加油，继续保持！" # 降级回复
 
 def generate_micro_coaching(activity_type, error_text):

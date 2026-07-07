@@ -6,6 +6,10 @@ import logging
 import re
 import json
 import base64
+try:
+    from json_repair import repair_json
+except Exception:
+    repair_json = None
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -21,11 +25,25 @@ from uuid import uuid4
 from statistics import median
 from pages.models import Activity, ActivityTimeSeries, AIFeedback, TrainingPlan, UserProfile, UserFaceEmbedding, TrainingSession
 from services.tts_service import play_tts_sync, stop_tts_playback
-from services.llm_service import generate_micro_coaching, generate_post_workout_feedback, load_yaml, call_local_llm
+from services.llm_service import (
+    generate_micro_coaching,
+    generate_post_workout_feedback,
+    load_yaml,
+    call_local_llm,
+    LocalLLMError,
+)
 from services.face_service import process_face_pipeline, verify_face_1_to_N
 from .realtime_store import upsert_session_realtime, get_session_realtime, pop_session_realtime
 
 logger = logging.getLogger(__name__)
+
+PLAN_JSON_SYSTEM_PROMPT = (
+    "你是严格的JSON生成器。"
+    "你只能输出一个合法JSON数组，不允许输出任何解释、注释、Markdown代码块。"
+    "数组长度必须为7。"
+    "每个元素必须且只能包含 day 与 exercises 两个键。"
+    "day 为1-7整数，exercises为数组。"
+)
 
 
 def _get_default_tts_voice_from_rules() -> str:
@@ -109,6 +127,77 @@ def _parse_plan_json_from_llm_reply(llm_reply: str):
         except Exception:
             continue
 
+    # 使用 json-repair 做通用修复（支持缺逗号/缺引号/括号不匹配等）
+    if repair_json:
+        try:
+            repaired = repair_json(text)
+            if repaired:
+                return json.loads(repaired)
+        except Exception:
+            pass
+
+    if repair_json:
+        for candidate in candidates:
+            try:
+                repaired = repair_json(candidate)
+                if repaired:
+                    return json.loads(repaired)
+            except Exception:
+                continue
+
+    # 强化兼容：修复类似
+    # ["day":[],"exercises":[]],"day2":{"exercises":["rest"]},...
+    # 这类“接近 JSON 但缺少最外层对象/数组结构”的输出
+    def _build_exercises(exercises_raw: str):
+        tokens = re.findall(r'"([^"\\]+)"', exercises_raw or '')
+        exercises_local = []
+        for token in tokens:
+            code = _normalize_activity_code(token)
+            if code in {'type', 'exercises', 'day'}:
+                continue
+            if code == 'rest':
+                return []
+            if code:
+                exercises_local.append({
+                    'type': code,
+                    'sets': 3,
+                    'reps_per_set': 12,
+                    'rest_sec': 60,
+                })
+        return exercises_local
+
+    day_map = {}
+
+    # 形态 A: ["day": "1", "exercises": ["squat"]]
+    malformed_day_ex_matches = re.findall(
+        r'\[\s*"day"\s*:\s*([^,\]]+)\s*,\s*"exercises"\s*:\s*\[([^\]]*)\]\s*\]',
+        text,
+        flags=re.IGNORECASE,
+    )
+    for idx, (day_raw, exercises_raw) in enumerate(malformed_day_ex_matches, start=1):
+        day_num = _safe_int(day_raw.strip().strip('"\''), idx)
+        day_map[day_num] = {
+            'day': day_num,
+            'exercises': _build_exercises(exercises_raw),
+        }
+
+    # 形态 B: "day2": {"exercises": ["rest"]}
+    day_key_matches = re.findall(
+        r'"day\s*(\d+)"\s*:\s*\{\s*"exercises"\s*:\s*\[([^\]]*)\]'
+        r'(?:\s*,\s*"day"\s*:\s*"?(\d+)"?)?\s*\}',
+        text,
+        flags=re.IGNORECASE,
+    )
+    for day_key, exercises_raw, day_override in day_key_matches:
+        day_num = _safe_int(day_override or day_key, _safe_int(day_key, len(day_map) + 1))
+        day_map[day_num] = {
+            'day': day_num,
+            'exercises': _build_exercises(exercises_raw),
+        }
+
+    if day_map:
+        return [day_map[k] for k in sorted(day_map.keys())]
+
     # 兼容逐行伪 JSON 格式：
     # ["day": "1", "exercises": ["squat"]]
     line_pattern = re.compile(
@@ -173,6 +262,46 @@ def _coerce_plan_content(plan_json):
             coerced.append({"day": idx, "exercises": exercises})
         return coerced
 
+    # 兼容模型返回 [{"day":1,"exercises":["squat"]}, ...] 的简化结构
+    # 将 exercises 内的字符串动作转换为标准对象结构
+    if isinstance(plan_json, list) and all(isinstance(x, dict) for x in plan_json):
+        changed = False
+        coerced_days = []
+        for idx, day_item in enumerate(plan_json, start=1):
+            day = _safe_int(day_item.get('day', idx), idx)
+            exercises_raw = day_item.get('exercises', [])
+            if isinstance(exercises_raw, str):
+                exercises_raw = [exercises_raw]
+                changed = True
+            if not isinstance(exercises_raw, list):
+                exercises_raw = []
+                changed = True
+
+            exercises = []
+            for ex in exercises_raw:
+                if isinstance(ex, dict):
+                    exercises.append(ex)
+                    continue
+
+                if isinstance(ex, str):
+                    code = _normalize_activity_code(ex)
+                    changed = True
+                    if code == 'rest':
+                        exercises = []
+                        break
+                    if code:
+                        exercises.append({
+                            "type": code,
+                            "sets": 3,
+                            "reps_per_set": 12,
+                            "rest_sec": 60,
+                        })
+
+            coerced_days.append({"day": day, "exercises": exercises})
+
+        if changed:
+            return coerced_days
+
     return plan_json
 
 
@@ -214,12 +343,14 @@ def _sanitize_plan_content(plan_json, allowed_codes: list[str]):
     if not isinstance(plan_json, list):
         return plan_json
 
-    sanitized = []
+    day_to_exercises = {}
     for idx, day_item in enumerate(plan_json, start=1):
         if not isinstance(day_item, dict):
             continue
 
         day = _safe_int(day_item.get('day', idx), idx)
+        if day < 1 or day > 7:
+            continue
         exercises_raw = day_item.get('exercises', [])
         if not isinstance(exercises_raw, list):
             exercises_raw = []
@@ -245,7 +376,13 @@ def _sanitize_plan_content(plan_json, allowed_codes: list[str]):
                 'rest_sec': rest_sec,
             })
 
-        sanitized.append({'day': day, 'exercises': exercises})
+        day_to_exercises[day] = exercises
+
+    # 强制补齐为 7 天：缺失天数自动补为休息日（exercises=[]）
+    sanitized = [
+        {'day': day, 'exercises': day_to_exercises.get(day, [])}
+        for day in range(1, 8)
+    ]
 
     return sanitized
 
@@ -466,7 +603,23 @@ class GenerateInitialPlanView(APIView):
             plan_json = None
             last_parse_err = None
             for attempt in range(1, 4):
-                llm_reply = call_local_llm(prompt, max_tokens=900, temperature=0.2)
+                try:
+                    llm_reply = call_local_llm(
+                        prompt,
+                        max_tokens=900,
+                        temperature=0.0,
+                        system_prompt=PLAN_JSON_SYSTEM_PROMPT,
+                        raise_on_error=True,
+                    )
+                except LocalLLMError as llm_err:
+                    last_parse_err = f"LLM请求失败: {llm_err}"
+                    logger.warning(
+                        "初始化训练计划请求失败，准备重试: user_id=%s, attempt=%s/3, err=%s",
+                        user.id,
+                        attempt,
+                        str(llm_err),
+                    )
+                    continue
                 try:
                     parsed = _parse_plan_json_from_llm_reply(llm_reply)
                     parsed = _coerce_plan_content(parsed)
