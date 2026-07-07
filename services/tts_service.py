@@ -49,7 +49,8 @@ def _start_audio_process(output_path, audio_duration: float):
     if platform.system() == "Windows":
         # 通过独立 powershell 进程播放 mp3，便于后续 terminate 强制中断
         # 注意：使用 file URI 避免路径空格导致的解析问题
-        file_uri = f"file:///{output_path.replace('\\', '/')}"
+        normalized_path = output_path.replace('\\', '/')
+        file_uri = f"file:///{normalized_path}"
         safe_duration = max(1.0, float(audio_duration) + 1.0)
         ps_script = (
             "Add-Type -AssemblyName presentationCore; "
