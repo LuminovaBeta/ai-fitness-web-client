@@ -27,6 +27,7 @@ urlpatterns = [
     # 训练动作字典查询
     path('train/exercises/', views.ExerciseDictionaryView.as_view(), name='api_train_exercises'),
     path('train/tts-play/', views.TTSPlayView.as_view(), name='api_train_tts_play'),
+    path('train/tts-stop/', views.TTSStopView.as_view(), name='api_train_tts_stop'),
 
     # 新增结构化 API
     path('user/profile/', views.UserProfileView.as_view(), name='api_user_profile'),

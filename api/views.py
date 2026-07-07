@@ -20,7 +20,7 @@ from datetime import timedelta
 from uuid import uuid4
 from statistics import median
 from pages.models import Activity, ActivityTimeSeries, AIFeedback, TrainingPlan, UserProfile, UserFaceEmbedding, TrainingSession
-from services.tts_service import play_tts_sync
+from services.tts_service import play_tts_sync, stop_tts_playback
 from services.llm_service import generate_micro_coaching, generate_post_workout_feedback, load_yaml, call_local_llm
 from services.face_service import process_face_pipeline, verify_face_1_to_N
 from .realtime_store import upsert_session_realtime, get_session_realtime, pop_session_realtime
@@ -1099,6 +1099,23 @@ class TTSPlayView(APIView):
             
         except Exception as e:
             return Response({"error": f"硬件扬声器调用失败: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class TTSStopView(APIView):
+    """
+    停止当前系统 TTS 播放 (POST)
+    用于前端在关闭对话框等场景中立即打断播报
+    """
+
+    def post(self, request):
+        try:
+            stopped = stop_tts_playback()
+            return Response({
+                "msg": "已请求停止播报",
+                "stopped": bool(stopped),
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": f"停止播报失败: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # ============================== 新增结构化 API ==============================

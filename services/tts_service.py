@@ -5,10 +5,74 @@ import os
 import platform
 import tempfile
 import subprocess
+import threading
+
+_PLAYER_LOCK = threading.Lock()
+_CURRENT_PLAYER_PROCESS = None
 
 async def _generate_audio(text, voice, output_path):
     communicate = edge_tts.Communicate(text, voice, rate="+10%")
     await communicate.save(output_path)
+
+
+def stop_tts_playback():
+    """停止当前正在进行的本地音频播放（最佳努力）。"""
+    global _CURRENT_PLAYER_PROCESS
+
+    with _PLAYER_LOCK:
+        proc = _CURRENT_PLAYER_PROCESS
+        _CURRENT_PLAYER_PROCESS = None
+
+    if not proc:
+        return False
+
+    try:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1.5)
+            except Exception:
+                proc.kill()
+        return True
+    except Exception as e:
+        print(f"停止 TTS 播放失败: {e}")
+        return False
+
+
+def _start_audio_process(output_path, audio_duration: float):
+    """启动可中断的本地播放进程，并保存句柄。"""
+    global _CURRENT_PLAYER_PROCESS
+
+    stop_tts_playback()
+
+    proc = None
+    if platform.system() == "Windows":
+        # 通过独立 powershell 进程播放 mp3，便于后续 terminate 强制中断
+        # 注意：使用 file URI 避免路径空格导致的解析问题
+        file_uri = f"file:///{output_path.replace('\\', '/')}"
+        safe_duration = max(1.0, float(audio_duration) + 1.0)
+        ps_script = (
+            "Add-Type -AssemblyName presentationCore; "
+            "$player = New-Object System.Windows.Media.MediaPlayer; "
+            f"$player.Open([Uri]'{file_uri}'); "
+            "$player.Play(); "
+            f"Start-Sleep -Milliseconds {int(safe_duration * 1000)}; "
+            "$player.Close();"
+        )
+        proc = subprocess.Popen(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        proc = subprocess.Popen(
+            ["mpg123", "-q", output_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    with _PLAYER_LOCK:
+        _CURRENT_PLAYER_PROCESS = proc
 
 def play_tts_sync(text, voice="zh-CN-YunyangNeural"):
     if not text:
@@ -32,12 +96,9 @@ def play_tts_sync(text, voice="zh-CN-YunyangNeural"):
                 print(f"解析音频时长失败，使用估算: {e}")
                 audio_duration = len(text) / 4.0 
             # ==================================
-            
-            if platform.system() == "Windows":
-                print(f"[TTS Mock] 语音生成成功，内容：'{text}' (时长: {audio_duration:.2f}s)")
-                os.system(f"start {output_path}") 
-            else:
-                subprocess.Popen(["mpg123", "-q", output_path])
+
+            print(f"[TTS] 语音生成成功，内容：'{text}' (时长: {audio_duration:.2f}s)")
+            _start_audio_process(output_path, audio_duration)
                 
     except Exception as e:
         print(f"TTS 播放失败: {e}")
