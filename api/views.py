@@ -28,6 +28,18 @@ from .realtime_store import upsert_session_realtime, get_session_realtime, pop_s
 logger = logging.getLogger(__name__)
 
 
+def _get_default_tts_voice_from_rules() -> str:
+    """从 llm_rules.yaml 读取默认 TTS 音色。"""
+    try:
+        config = load_yaml() or {}
+        voice = str((config.get('models', {}) or {}).get('tts_voice', '')).strip()
+        if voice:
+            return voice
+    except Exception:
+        pass
+    return 'zh-CN-YunjianNeural'
+
+
 class ROSRuntimeConfigView(APIView):
     """ROS 运行时配置查询（用于前端按模式读取连接参数）"""
     permission_classes = [AllowAny]
@@ -1083,7 +1095,7 @@ class TTSPlayView(APIView):
     def post(self, request):
         text = request.data.get('text', '').strip()
         # 允许前端自定义音色，默认使用阳光男声
-        voice = request.data.get('voice', 'zh-CN-YunyangNeural') 
+        voice = request.data.get('voice') or _get_default_tts_voice_from_rules()
         
         if not text:
             return Response({"error": "播放文本不能为空"}, status=status.HTTP_400_BAD_REQUEST)

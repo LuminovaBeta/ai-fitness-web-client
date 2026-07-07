@@ -1,7 +1,7 @@
 # config/llm_rules.yaml
 models:
   default_local_model: "qwen2.5-3b-rk3588"
-  tts_voice: "zh-CN-YunxiNeural"      # 微软 Edge-TTS 阳光男声教练音色
+  tts_voice: "zh-CN-YunyangNeural"      # 微软 Edge-TTS 云健男声教练音色
 
 api_client:
   base_url: "http://127.0.0.1:8081"

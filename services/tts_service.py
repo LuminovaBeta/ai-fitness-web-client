@@ -6,9 +6,31 @@ import platform
 import tempfile
 import subprocess
 import threading
+import yaml
+
+from django.conf import settings
 
 _PLAYER_LOCK = threading.Lock()
 _CURRENT_PLAYER_PROCESS = None
+_DEFAULT_TTS_VOICE = None
+
+
+def _get_default_tts_voice():
+    """从 llm_rules.yaml 读取默认 TTS 音色，读取失败时使用兜底值。"""
+    global _DEFAULT_TTS_VOICE
+    if _DEFAULT_TTS_VOICE:
+        return _DEFAULT_TTS_VOICE
+
+    fallback = "zh-CN-YunjianNeural"
+    try:
+        yaml_path = settings.BASE_DIR / "config" / "llm_rules.yaml"
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        voice = str((cfg.get("models", {}) or {}).get("tts_voice", "")).strip()
+        _DEFAULT_TTS_VOICE = voice or fallback
+    except Exception:
+        _DEFAULT_TTS_VOICE = fallback
+    return _DEFAULT_TTS_VOICE
 
 async def _generate_audio(text, voice, output_path):
     communicate = edge_tts.Communicate(text, voice, rate="+10%")
@@ -75,9 +97,12 @@ def _start_audio_process(output_path, audio_duration: float):
     with _PLAYER_LOCK:
         _CURRENT_PLAYER_PROCESS = proc
 
-def play_tts_sync(text, voice="zh-CN-YunyangNeural"):
+def play_tts_sync(text, voice=None):
     if not text:
         return 0 # 返回 0 秒
+
+    if not voice:
+        voice = _get_default_tts_voice()
     
     temp_dir = tempfile.gettempdir()
     output_path = os.path.join(temp_dir, "coach.mp3")
