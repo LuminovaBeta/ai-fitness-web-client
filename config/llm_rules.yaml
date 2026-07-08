@@ -26,6 +26,22 @@ prompts:
     请输出评估JSON：包含字段 "quality_score"(1-10), "feedback_text"(100字), "new_plan"(下周训练计划JSON数组)。
     约束：new_plan 中动作 type 只能来自白名单或 rest，且每日 sets<=5、reps_per_set<=20。
 
+  post_workout_eval: >
+    你是高级运动科学引擎。用户刚完成训练：
+    目标: {target_reps}次, 实际: {actual_reps}次。静息心率: {avg_rest_hr}BPM, 运动最低血氧: {min_spo2}%, RPE疲劳度: {rpe_score}。
+    仅输出评估信息，不要输出训练计划。
+    只允许输出一个 JSON 对象，且仅包含两个字段："quality_score"(1-10整数) 与 "feedback_text"(不超过100字中文)。
+    禁止输出 Markdown、解释文本、额外字段。
+
+  post_workout_new_plan: >
+    你是严谨的训练计划生成器。请基于用户表现输出下周7天训练计划。
+    用户表现：目标 {target_reps} 次，实际 {actual_reps} 次，静息心率 {avg_rest_hr} BPM，最低血氧 {min_spo2}% ，RPE {rpe_score}。
+    系统允许动作 type 白名单：{allowed_exercise_codes}，允许休息日 type 为 rest。
+    只允许输出一个合法 JSON 数组（长度必须为7），每个元素必须且只能包含 day 与 exercises 两个键。
+    day 为 1-7 整数；exercises 为数组；训练动作对象包含 type / sets / reps_per_set / rest_sec。
+    若为休息日，type 必须为 rest，且 exercises 置空数组。
+    禁止输出 Markdown、解释文本、额外字段。
+
   chatbot: >
     你是 AI 专业的运动健身教练。基于以下【真实数据】回答问题，语气要亲切自然，绝不能瞎编。
     【用户近期数据】：近7天耗时{weekly_duration}分钟，平均强度{weekly_intensity}。上次评语：{last_feedback}。

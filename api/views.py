@@ -28,6 +28,8 @@ from services.tts_service import play_tts_sync, stop_tts_playback
 from services.llm_service import (
     generate_micro_coaching,
     generate_post_workout_feedback,
+    generate_post_workout_eval,
+    generate_post_workout_new_plan,
     load_yaml,
     call_local_llm,
     LocalLLMError,
@@ -1169,10 +1171,15 @@ class TrainFinishView(APIView):
                 allowed_codes = _get_allowed_plan_exercise_codes()
                 llm_payload['allowed_exercise_codes'] = allowed_codes
                 
-                # 3.3 生成反馈与新计划
-                result_json = generate_post_workout_feedback(llm_payload)
-                if result_json:
-                    result_json = _sanitize_post_workout_result(result_json, allowed_codes)
+                # 3.3 拆分请求：先评估，再请求新计划，降低一次性生成负担
+                eval_json = generate_post_workout_eval(llm_payload) or {}
+                plan_json = generate_post_workout_new_plan(llm_payload)
+                merged_result = eval_json if isinstance(eval_json, dict) else {}
+                if plan_json is not None:
+                    merged_result = {**merged_result, 'new_plan': plan_json}
+
+                if merged_result:
+                    result_json = _sanitize_post_workout_result(merged_result, allowed_codes)
                     # 核心修复点：将大模型打出的评分更新回主表
                     new_score = result_json.get('quality_score', 5)
                     Activity.objects.filter(id=act_id).update(quality_score=new_score)
@@ -1187,7 +1194,7 @@ class TrainFinishView(APIView):
                     # 计划自动进化：覆写新的 JSON
                     new_plan = result_json.get('new_plan')
                     # 仅按计划训练（GUIDED）才自动更新训练计划；自由训练只做总结
-                    if new_plan and training_mode == 'GUIDED':
+                    if new_plan and training_mode == 'GUIDED' and _plan_has_effective_exercises(new_plan):
                         _replace_active_plan_for_user(
                             user_id=user_id,
                             plan_content=new_plan,
@@ -1938,9 +1945,14 @@ class TrainingSessionFinishView(APIView):
                 allowed_codes = _get_allowed_plan_exercise_codes()
                 llm_payload['allowed_exercise_codes'] = allowed_codes
 
-                result_json = generate_post_workout_feedback(llm_payload)
-                if result_json:
-                    result_json = _sanitize_post_workout_result(result_json, allowed_codes)
+                eval_json = generate_post_workout_eval(llm_payload) or {}
+                plan_json = generate_post_workout_new_plan(llm_payload)
+                merged_result = eval_json if isinstance(eval_json, dict) else {}
+                if plan_json is not None:
+                    merged_result = {**merged_result, 'new_plan': plan_json}
+
+                if merged_result:
+                    result_json = _sanitize_post_workout_result(merged_result, allowed_codes)
                     new_score = result_json.get('quality_score', 5)
                     Activity.objects.filter(id=act_id).update(quality_score=new_score)
 
@@ -1953,7 +1965,7 @@ class TrainingSessionFinishView(APIView):
                     )
 
                     new_plan = result_json.get('new_plan')
-                    if new_plan:
+                    if new_plan and _plan_has_effective_exercises(new_plan):
                         _replace_active_plan_for_user(
                             user_id=user_id,
                             plan_content=new_plan,

@@ -6,6 +6,15 @@ import requests # 假设您通过 HTTP 调用本地部署的 vLLM / Ollama
 from django.conf import settings
 
 
+PLAN_JSON_SYSTEM_PROMPT = (
+    "你是严格的JSON生成器。"
+    "你只能输出一个合法JSON数组，不允许输出任何解释、注释、Markdown代码块。"
+    "数组长度必须为7。"
+    "每个元素必须且只能包含 day 与 exercises 两个键。"
+    "day 为1-7整数，exercises为数组。"
+)
+
+
 class LocalLLMError(RuntimeError):
     """本地 LLM 服务调用失败或响应结构异常。"""
 
@@ -75,6 +84,72 @@ def generate_post_workout_feedback(data_dict):
     response_text = call_local_llm(prompt, max_tokens=500, temperature=0.3)
     try:
         # 清理 Markdown 代码块包裹
+        clean_text = response_text.replace("```json", "").replace("```", "").strip()
+        clean_text = re.sub(r"^\s*\[JSON\]\s*", "", clean_text, flags=re.IGNORECASE)
+        try:
+            return json.loads(clean_text)
+        except json.JSONDecodeError:
+            candidates = re.findall(r"(\{[\s\S]*\}|\[[\s\S]*\])", clean_text)
+            for candidate in candidates:
+                try:
+                    return json.loads(candidate)
+                except json.JSONDecodeError:
+                    continue
+            return None
+    except Exception:
+        return None
+
+
+def generate_post_workout_eval(data_dict):
+    """仅生成训练评估分数与评语。"""
+    config = load_yaml() or {}
+    prompts = config.get('prompts', {})
+    prompt_template = prompts.get('post_workout_eval') or prompts.get('post_workout')
+    prompt = prompt_template.format(**data_dict)
+    response_text = call_local_llm(prompt, max_tokens=220, temperature=0.2)
+
+    try:
+        clean_text = response_text.replace("```json", "").replace("```", "").strip()
+        clean_text = re.sub(r"^\s*\[JSON\]\s*", "", clean_text, flags=re.IGNORECASE)
+        try:
+            parsed = json.loads(clean_text)
+        except json.JSONDecodeError:
+            candidates = re.findall(r"(\{[\s\S]*\}|\[[\s\S]*\])", clean_text)
+            parsed = None
+            for candidate in candidates:
+                try:
+                    parsed = json.loads(candidate)
+                    break
+                except json.JSONDecodeError:
+                    continue
+        if not isinstance(parsed, dict):
+            return None
+
+        return {
+            "quality_score": parsed.get("quality_score", 5),
+            "feedback_text": parsed.get("feedback_text", "干得很棒！"),
+        }
+    except Exception:
+        return None
+
+
+def generate_post_workout_new_plan(data_dict):
+    """仅生成下周训练计划（7天JSON数组）。"""
+    config = load_yaml() or {}
+    prompts = config.get('prompts', {})
+    prompt_template = prompts.get('post_workout_new_plan')
+    if not prompt_template:
+        return None
+
+    prompt = prompt_template.format(**data_dict)
+    response_text = call_local_llm(
+        prompt,
+        max_tokens=700,
+        temperature=0.0,
+        system_prompt=PLAN_JSON_SYSTEM_PROMPT,
+    )
+
+    try:
         clean_text = response_text.replace("```json", "").replace("```", "").strip()
         clean_text = re.sub(r"^\s*\[JSON\]\s*", "", clean_text, flags=re.IGNORECASE)
         try:
