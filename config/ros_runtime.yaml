@@ -63,7 +63,7 @@ action_detectors:
       state: "/jumping_jack/state"
       rep_completed: "/jumping_jack/rep_completed"
       errors: "/jumping_jack/errors"
-  - code: "pushup"
+  - code: "push_up"
     name_zh: "俯卧撑"
     name_en: "Push-up"
     ros_package: "pushup_evaluator"
