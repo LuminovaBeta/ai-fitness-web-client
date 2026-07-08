@@ -1,7 +1,7 @@
 from django.shortcuts import render
 # Create your views here.
 from django.db.models import Sum, Avg, Min
-from django.db import connection
+from django.db import connection, transaction
 import logging
 import re
 import json
@@ -409,6 +409,55 @@ def _sanitize_post_workout_result(result_json, allowed_codes: list[str]) -> dict
 
     return sanitized
 
+
+def _replace_active_plan_for_user(*, user=None, user_id=None, plan_content=None, plan_type='LLM_GENERATED'):
+    """原子化替换用户当前激活计划，避免“先失活后创建失败”导致无计划。"""
+    if user is None and user_id is None:
+        raise ValueError('user 或 user_id 至少提供一个')
+
+    if user is not None:
+        target_qs = TrainingPlan.objects.filter(user=user)
+        create_kwargs = {'user': user}
+    else:
+        target_qs = TrainingPlan.objects.filter(user_id=user_id)
+        create_kwargs = {'user_id': user_id}
+
+    with transaction.atomic():
+        target_qs.filter(is_active=True).update(is_active=False)
+        return TrainingPlan.objects.create(
+            **create_kwargs,
+            plan_content=plan_content,
+            is_active=True,
+            plan_type=plan_type,
+        )
+
+
+def _get_or_recover_active_plan(user):
+    """获取激活计划；若历史数据异常导致无激活计划，自动回补最近一条。"""
+    active_plans = TrainingPlan.objects.filter(user=user, is_active=True).order_by('-created_at')
+    active_plan = active_plans.first()
+
+    # 自愈：若出现多个 active，保留最新一条
+    if active_plan and active_plans.count() > 1:
+        TrainingPlan.objects.filter(user=user, is_active=True).exclude(id=active_plan.id).update(is_active=False)
+        return active_plan
+
+    if active_plan:
+        return active_plan
+
+    latest_plan = TrainingPlan.objects.filter(user=user).order_by('-created_at').first()
+    if latest_plan:
+        latest_plan.is_active = True
+        latest_plan.save(update_fields=['is_active'])
+        logger.warning(
+            '检测到用户无激活计划，已自动恢复最近计划: user_id=%s, plan_id=%s',
+            user.id,
+            latest_plan.id,
+        )
+        return latest_plan
+
+    return None
+
 class RegisterView(APIView):
     """1. 基础注册接口 (POST) - 仅负责账号与身体档案初始化"""
     permission_classes = [AllowAny] # 注册接口无需鉴权
@@ -642,11 +691,9 @@ class GenerateInitialPlanView(APIView):
                 raise ValueError(f"训练计划解析连续3次失败: {last_parse_err}")
 
             # 3. 计划落盘 (保持不变)
-            TrainingPlan.objects.filter(user=user, is_active=True).update(is_active=False)
-            plan = TrainingPlan.objects.create(
+            plan = _replace_active_plan_for_user(
                 user=user,
                 plan_content=plan_json,
-                is_active=True,
                 plan_type='LLM_GENERATED'
             )
             
@@ -661,11 +708,9 @@ class GenerateInitialPlanView(APIView):
             # 容灾降级机制：如果 LLM 超时或解析失败，给一个默认计划，防止前端无数据可用
             logger.warning(f"初始化训练计划生成失败，触发兜底计划: user_id={user.id}, err={str(e)}")
             default_plan = [{"day": 1, "exercises": [{"type": "squat", "sets": 3, "reps_per_set": 15, "rest_sec": 60}]}]
-            TrainingPlan.objects.filter(user=user, is_active=True).update(is_active=False)
-            plan = TrainingPlan.objects.create(
+            plan = _replace_active_plan_for_user(
                 user=user,
                 plan_content=default_plan,
-                is_active=True,
                 plan_type='LLM_GENERATED'
             )
             return Response({
@@ -794,12 +839,7 @@ class TrainingPlanView(APIView):
     def get(self, request):
         """获取当前正在执行的激活计划"""
         user = request.user
-        active_plans = TrainingPlan.objects.filter(user=user, is_active=True).order_by('-created_at')
-        plan = active_plans.first()
-
-        # 自愈：若出现多个 active，保留最新一条
-        if plan and active_plans.count() > 1:
-            TrainingPlan.objects.filter(user=user, is_active=True).exclude(id=plan.id).update(is_active=False)
+        plan = _get_or_recover_active_plan(user)
         
         if not plan:
             return Response({"msg": "暂无活动中的训练计划，请先生成"}, status=status.HTTP_404_NOT_FOUND)
@@ -821,13 +861,11 @@ class TrainingPlanView(APIView):
             return Response({"error": "计划结构非法，请传入 [{day, exercises:[{type,...}]}]"}, status=status.HTTP_400_BAD_REQUEST)
             
         # 将该用户之前的所有计划设为失效
-        TrainingPlan.objects.filter(user=user, is_active=True).update(is_active=False)
-        
         # 创建新计划
-        plan = TrainingPlan.objects.create(
+        plan = _replace_active_plan_for_user(
             user=user,
             plan_content=new_plan_content,
-            is_active=True
+            plan_type='LLM_GENERATED'
         )
         return Response({"msg": "训练计划更新成功", "plan_id": plan.id}, status=status.HTTP_201_CREATED)
 
@@ -894,10 +932,7 @@ class DashboardView(APIView):
         # ==========================================
         # 3. [新增] 核心逻辑：今日计划完成度计算
         # ==========================================
-        active_plans = TrainingPlan.objects.filter(user=user, is_active=True).order_by('-created_at')
-        active_plan = active_plans.first()
-        if active_plan and active_plans.count() > 1:
-            TrainingPlan.objects.filter(user=user, is_active=True).exclude(id=active_plan.id).update(is_active=False)
+        active_plan = _get_or_recover_active_plan(user)
         today_completed = False
         progress_percent = 0
         today_exercises = []
@@ -1095,11 +1130,9 @@ class TrainFinishView(APIView):
                     new_plan = result_json.get('new_plan')
                     # 仅按计划训练（GUIDED）才自动更新训练计划；自由训练只做总结
                     if new_plan and training_mode == 'GUIDED':
-                        TrainingPlan.objects.filter(user_id=user_id, is_active=True).update(is_active=False)
-                        TrainingPlan.objects.create(
+                        _replace_active_plan_for_user(
                             user_id=user_id,
                             plan_content=new_plan,
-                            is_active=True,
                             plan_type='LLM_GENERATED'
                         )
 
@@ -1857,11 +1890,9 @@ class TrainingSessionFinishView(APIView):
 
                     new_plan = result_json.get('new_plan')
                     if new_plan:
-                        TrainingPlan.objects.filter(user_id=user_id, is_active=True).update(is_active=False)
-                        TrainingPlan.objects.create(
+                        _replace_active_plan_for_user(
                             user_id=user_id,
                             plan_content=new_plan,
-                            is_active=True,
                             plan_type='LLM_GENERATED'
                         )
             except Exception as e:
