@@ -739,7 +739,7 @@ class ActivityListView(APIView):
                 "id": act.id,
                 "activity_type": normalized_type,
                 "activity_name": _activity_display_name_zh(normalized_type),
-                "start_time": act.start_time.strftime('%Y-%m-%d %H:%M:%S'),
+                "start_time": timezone.localtime(act.start_time).strftime('%Y-%m-%d %H:%M:%S'),
                 "duration": act.duration,
                 "total_reps": act.total_reps,
                 "intensity": act.get_intensity_display(), # 返回中文“低/中/高强度”
@@ -768,7 +768,7 @@ class ActivityDetailView(APIView):
             "activity_type": normalized_type,
             "activity_name": _activity_display_name_zh(normalized_type),
             "training_mode": activity.get_training_mode_display(),
-            "start_time": activity.start_time.strftime('%Y-%m-%d %H:%M:%S'),
+            "start_time": timezone.localtime(activity.start_time).strftime('%Y-%m-%d %H:%M:%S'),
             "duration_seconds": activity.duration,
             "total_reps": activity.total_reps,
             "intensity": activity.get_intensity_display(),

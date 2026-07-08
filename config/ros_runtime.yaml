@@ -1,12 +1,12 @@
 # ROS 运行时配置（统一维护）
 # 可选模式：windows_debug / rk3588
-runtime_mode: windows_debug
+runtime_mode: rk3588
 
 # 训练会话实时数据源切换：
 # - simulated: 后端使用内置模拟数据（便于联调/测试）
 # - client_relay: 前端将 ROS 实时数据回传后端，后端作为统一数据源
 session_realtime:
-  source_mode: simulated
+  source_mode: client_relay
   relay_ttl_sec: 20
 
 profiles:
@@ -63,3 +63,64 @@ action_detectors:
       state: "/jumping_jack/state"
       rep_completed: "/jumping_jack/rep_completed"
       errors: "/jumping_jack/errors"
+  - code: "pushup"
+    name_zh: "俯卧撑"
+    name_en: "Push-up"
+    ros_package: "pushup_evaluator"
+    enabled: true
+    topics:
+      control: "/pushup/control"
+      state: "/pushup/state"
+      rep_completed: "/pushup/rep_completed"
+      errors: "/pushup/errors"
+  - code: "squat_jump"
+    name_zh: "健步蹲"
+    name_en: "Squat Jump"
+    ros_package: "squat_jump_evaluator"
+    enabled: true
+    topics:
+      control: "/squat_jump/control"
+      state: "/squat_jump/state"
+      rep_completed: "/squat_jump/rep_completed"
+      errors: "/squat_jump/errors"
+  - code: "high_knee_lift"
+    name_zh: "高抬腿"
+    name_en: "High Knee Lift"
+    ros_package: "high_knee_lift_evaluator"
+    enabled: true
+    topics:
+      control: "/high_knee_lift/control"
+      state: "/high_knee_lift/state"
+      rep_completed: "/high_knee_lift/rep_completed"
+      errors: "/high_knee_lift/errors"
+  - code: "plank"
+    name_zh: "平板支撑"
+    name_en: "Plank"
+    ros_package: "plank_evaluator"
+    enabled: true
+    topics:
+      control: "/plank/control"
+      state: "/plank/state"
+      rep_completed: "/plank/rep_completed"
+      errors: "/plank/errors"
+  - code: "Reverse Nordic Curl"
+    name_zh: "反向北欧腿蹲"
+    name_en: "Reverse Nordic Curl"
+    ros_package: "reverse_nordic_curl_evaluator"
+    enabled: true
+    topics:
+      control: "/reverse_nordic_curl/control"
+      state: "/reverse_nordic_curl/state"
+      rep_completed: "/reverse_nordic_curl/rep_completed"
+      errors: "/reverse_nordic_curl/errors"
+  - code: "s1111"
+    name_zh: "保加利亚蹲"
+    name_en: "s1111"
+    ros_package: "s1111_evaluator"
+    enabled: true
+    topics:
+      control: "/s1111/control"
+      state: "/s1111/state"
+      rep_completed: "/s1111/rep_completed"
+      errors: "/s1111/errors"
+      
