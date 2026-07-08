@@ -455,6 +455,7 @@ class RegisterView(APIView):
         return Response({
             "msg": "注册成功，账号档案已建立",
             "username": user.username,
+            "profile_initialized": True,
             **tokens
         }, status=status.HTTP_201_CREATED)
     
@@ -652,7 +653,8 @@ class GenerateInitialPlanView(APIView):
             return Response({
                 "msg": "AI 专属训练计划生成成功",
                 "plan_id": plan.id,
-                "plan_content": plan_json
+                "plan_content": plan_json,
+                "is_ready": True
             }, status=status.HTTP_201_CREATED)
 
         except Exception as e:
@@ -669,7 +671,8 @@ class GenerateInitialPlanView(APIView):
             return Response({
                 "msg": "当前 AI 算力拥挤，已为您匹配基础兜底计划",
                 "plan_id": plan.id,
-                "plan_content": default_plan
+                "plan_content": default_plan,
+                "is_ready": True
             }, status=status.HTTP_201_CREATED)
 
 class ActivityListView(APIView):
@@ -994,6 +997,7 @@ class DashboardView(APIView):
             "weekly_duration_mins": round(weekly_duration / 60, 1),
             "plan_status": {
                 "active_plan_id": active_plan.id if active_plan else None,
+                "is_generating": active_plan is None,
                 "is_completed": today_completed,
                 "progress_percent": progress_percent,
                 "today_exercises": today_exercises # 供前端渲染列表：深蹲 (45/60次) 
