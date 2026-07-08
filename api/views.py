@@ -387,6 +387,61 @@ def _sanitize_plan_content(plan_json, allowed_codes: list[str]):
     return sanitized
 
 
+def _plan_has_effective_exercises(plan_content) -> bool:
+    """判断计划中是否至少包含一个有效训练动作（非 rest）。"""
+    if not isinstance(plan_content, list):
+        return False
+
+    for day_item in plan_content:
+        if not isinstance(day_item, dict):
+            continue
+        exercises = day_item.get('exercises', [])
+        if not isinstance(exercises, list):
+            continue
+        for ex in exercises:
+            if not isinstance(ex, dict):
+                continue
+            ex_type = _normalize_activity_code(ex.get('type', ''))
+            if ex_type and ex_type != 'rest':
+                return True
+    return False
+
+
+def _build_fallback_week_plan(allowed_codes: list[str]) -> list[dict]:
+    """生成稳定可用的 7 天兜底计划，避免全周休息。"""
+    normalized_codes = [
+        _normalize_activity_code(code)
+        for code in (allowed_codes or [])
+        if _normalize_activity_code(code) and _normalize_activity_code(code) != 'rest'
+    ]
+    normalized_codes = list(dict.fromkeys(normalized_codes))
+
+    if not normalized_codes:
+        normalized_codes = ['squat', 'jumping_jack', 'push_up']
+
+    training_days = {1, 2, 4, 5, 6}  # 3、7 为恢复日
+    plan = []
+    cursor = 0
+    for day in range(1, 8):
+        if day not in training_days:
+            plan.append({'day': day, 'exercises': []})
+            continue
+
+        ex_type = normalized_codes[cursor % len(normalized_codes)]
+        cursor += 1
+        plan.append({
+            'day': day,
+            'exercises': [{
+                'type': ex_type,
+                'sets': 3,
+                'reps_per_set': 12,
+                'rest_sec': 60,
+            }],
+        })
+
+    return plan
+
+
 def _sanitize_post_workout_result(result_json, allowed_codes: list[str]) -> dict:
     """规范化训练后分析结果，避免异常字段污染存储。"""
     if not isinstance(result_json, dict):
@@ -676,6 +731,8 @@ class GenerateInitialPlanView(APIView):
                     parsed = _sanitize_plan_content(parsed, allowed_codes)
                     if not _is_valid_plan_content(parsed):
                         raise ValueError("训练计划结构非法")
+                    if not _plan_has_effective_exercises(parsed):
+                        raise ValueError("训练计划未包含有效训练动作，疑似大模型输出异常")
                     plan_json = parsed
                     break
                 except Exception as parse_err:
@@ -707,7 +764,8 @@ class GenerateInitialPlanView(APIView):
         except Exception as e:
             # 容灾降级机制：如果 LLM 超时或解析失败，给一个默认计划，防止前端无数据可用
             logger.warning(f"初始化训练计划生成失败，触发兜底计划: user_id={user.id}, err={str(e)}")
-            default_plan = [{"day": 1, "exercises": [{"type": "squat", "sets": 3, "reps_per_set": 15, "rest_sec": 60}]}]
+            allowed_codes = _get_allowed_plan_exercise_codes()
+            default_plan = _build_fallback_week_plan(allowed_codes)
             plan = _replace_active_plan_for_user(
                 user=user,
                 plan_content=default_plan,
@@ -1360,6 +1418,10 @@ def _normalize_activity_code(activity_code: str) -> str:
         'lunges': 'lunge',
         'squats': 'squat',
         'planks': 'plank',
+        'reverse nordic curl': 'reverse_nordic_curl',
+        'reverse nordic curls': 'reverse_nordic_curl',
+        'reverse-nordic-curl': 'reverse_nordic_curl',
+        'reversenordiccurl': 'reverse_nordic_curl',
         'mix_plan': 'mixed_plan',
         'mixed': 'mixed_plan',
     }
@@ -1385,7 +1447,8 @@ def _activity_display_name_zh(activity_code: str) -> str:
     ros_cfg = getattr(settings, 'ROS_RUNTIME_CONFIG', {}) or {}
     exercise_dict = ros_cfg.get('exercise_dictionary', []) if isinstance(ros_cfg, dict) else []
     for item in exercise_dict:
-        if str(item.get('code', '')).strip() == code:
+        item_code = _normalize_activity_code(str(item.get('code', '')).strip())
+        if item_code == code:
             return str(item.get('name_zh') or item.get('name') or code)
 
     # 最终兜底：使用内置中文文案，不依赖 Activity.ACTIVITY_TYPES
@@ -1395,6 +1458,7 @@ def _activity_display_name_zh(activity_code: str) -> str:
         'lunge': '弓箭步',
         'push_up': '俯卧撑',
         'pushup': '俯卧撑',
+        'reverse_nordic_curl': '反向北欧腿蹲',
         'plank': '平板支撑',
         'mixed_plan': '混合计划',
     }
